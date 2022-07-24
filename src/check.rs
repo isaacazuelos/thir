@@ -5,12 +5,17 @@
 
 // ## Preliminaries
 
+use std::collections::HashMap;
+
 use crate::util::{intersection, lookup, union};
 
 // For simplicity, we're not worrying too much about reducing shared references.
 
 type Error = &'static str;
-type Id = String;
+
+// kind of ties our hands at defining new ones, but it's nicer to avoid all the
+// `.into` calls for now.
+type Id = &'static str;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -47,6 +52,7 @@ pub enum Type {
 
 impl Type {
     // The same as the [`Type::Ap`] constructor, but it does the boxing for us.
+    // I'll do similar things with other types to clone.
     fn app(&self, b: Type) -> Type {
         Type::Ap(Box::new(self.clone()), Box::new(b))
     }
@@ -78,43 +84,43 @@ mod prim {
     use super::*;
 
     pub fn unit() -> Type {
-        Type::Con(Tycon(String::from("()"), Kind::Star))
+        Type::Con(Tycon("()", Kind::Star))
     }
 
     pub fn character() -> Type {
-        Type::Con(Tycon(String::from("Char"), Kind::Star))
+        Type::Con(Tycon("Char", Kind::Star))
     }
 
     pub fn int() -> Type {
-        Type::Con(Tycon(String::from("Int"), Kind::Star))
+        Type::Con(Tycon("Int", Kind::Star))
     }
 
     pub fn integer() -> Type {
-        Type::Con(Tycon(String::from("Integer"), Kind::Star))
+        Type::Con(Tycon("Integer", Kind::Star))
     }
 
     pub fn float() -> Type {
-        Type::Con(Tycon(String::from("Float"), Kind::Star))
+        Type::Con(Tycon("Float", Kind::Star))
     }
 
     pub fn double() -> Type {
-        Type::Con(Tycon(String::from("Double"), Kind::Star))
+        Type::Con(Tycon("Double", Kind::Star))
     }
 
     pub fn list() -> Type {
-        Type::Con(Tycon(String::from("[]"), Kind::fun(Kind::Star, Kind::Star)))
+        Type::Con(Tycon("[]", Kind::fun(Kind::Star, Kind::Star)))
     }
 
     pub fn arrow() -> Type {
         Type::Con(Tycon(
-            String::from("(->)"),
+            "(->)",
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
         ))
     }
 
     pub fn tuple2() -> Type {
         Type::Con(Tycon(
-            String::from("(,)"),
+            "(,)",
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
         ))
     }
@@ -140,29 +146,29 @@ fn pair(a: Type, b: Type) -> Type {
 }
 
 trait HasKind {
-    fn kind(&self) -> Kind;
+    fn kind(&self) -> &Kind;
 }
 
 impl HasKind for Tyvar {
-    fn kind(&self) -> Kind {
-        self.1.clone()
+    fn kind(&self) -> &Kind {
+        &self.1
     }
 }
 
 impl HasKind for Tycon {
-    fn kind(&self) -> Kind {
-        self.1.clone()
+    fn kind(&self) -> &Kind {
+        &self.1
     }
 }
 
 impl HasKind for Type {
-    fn kind(&self) -> Kind {
+    fn kind(&self) -> &Kind {
         match self {
             Type::TGen(_) => unimplemented!(),
             Type::Var(v) => v.kind(),
             Type::Con(c) => c.kind(),
             Type::Ap(t, _) => match t.kind() {
-                Kind::Fun(_, k) => (*k).clone(),
+                Kind::Fun(_, k) => k,
 
                 // If the type is well-formed, we can't apply something that's
                 // not of kind `(* -> *)`.
@@ -344,6 +350,17 @@ enum Qual<T> {
     Then(Vec<Pred>, T),
 }
 
+impl<T: Clone> Qual<T> {
+    fn then(pred: &[Pred], t: &T) -> Qual<T> {
+        Qual::Then(pred.into(), t.clone())
+    }
+
+    fn consequence(&self) -> &T {
+        let Qual::Then(_, q) = self;
+        q
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Pred {
     IsIn(Id, Type),
@@ -400,41 +417,51 @@ where
     }
 }
 
-type Class = (Vec<Id>, Vec<Inst>);
+// I couldn't keep things straight as a tuple, so I'm naming things.
+#[derive(Debug, Clone, PartialEq)]
+struct Class {
+    supers: Vec<Id>,
+    instances: Vec<Inst>,
+}
+
+impl Class {
+    // Keeps the same arg order as the tuple, so we can use it as a constructor
+    fn new(supers: &[Id], instances: &[Inst]) -> Self {
+        Class {
+            supers: supers.into(),
+            instances: instances.as_ref().to_vec(),
+        }
+    }
+}
+
 type Inst = Qual<Pred>;
 
 fn ord_example() -> Class {
-    (
+    Class::new(
         // This part tells us that Eq is a 'superclass' of Ord,
         // it's the `class Eq => Ord` part.
-        vec![String::from("Eq")],
+        &["Eq"],
         // These are instances of the class
-        vec![
+        &[
             // This is the `instance Ord _ where` part for unit, char, int.
             // Notice this isn't the implementation, just the type level stuff.
-            Qual::Then(vec![], Pred::IsIn(String::from("Ord"), prim::unit())),
-            Qual::Then(vec![], Pred::IsIn(String::from("Ord"), prim::character())),
-            Qual::Then(vec![], Pred::IsIn(String::from("Ord"), prim::int())),
+            Qual::then(&[], &Pred::IsIn("Ord", prim::unit())),
+            Qual::then(&[], &Pred::IsIn("Ord", prim::character())),
+            Qual::then(&[], &Pred::IsIn("Ord", prim::int())),
             // This one is `Ord a, Ord b => Ord (a, b)`
-            Qual::Then(
-                vec![
+            Qual::then(
+                &[
                     // Ord a constraint
-                    Pred::IsIn(
-                        String::from("Ord"),
-                        Type::Var(Tyvar(String::from("a"), Kind::Star)),
-                    ),
+                    Pred::IsIn("Ord", Type::Var(Tyvar("a", Kind::Star))),
                     // Ord b constraint
-                    Pred::IsIn(
-                        String::from("Ord"),
-                        Type::Var(Tyvar(String::from("b"), Kind::Star)),
-                    ),
+                    Pred::IsIn("Ord", Type::Var(Tyvar("b", Kind::Star))),
                 ],
                 // => Ord (a, b)
-                Pred::IsIn(
-                    String::from("Ord"),
+                &Pred::IsIn(
+                    "Ord",
                     pair(
-                        Type::Var(Tyvar(String::from("a"), Kind::Star)),
-                        Type::Var(Tyvar(String::from("b"), Kind::Star)),
+                        Type::Var(Tyvar("a", Kind::Star)),
+                        Type::Var(Tyvar("b", Kind::Star)),
                     ),
                 ),
             ),
@@ -445,3 +472,126 @@ fn ord_example() -> Class {
 // This is another place where I'm appreciating Haskell's brevity.
 
 // ### 7.2 Class Environments
+
+// The paper uses a function with type `Id -> Maybe Class` here for the field
+// `classes`. I'm betting that function is a lookup, so a hashmap is a different
+// way to do that.
+//
+// The way the paper does it is by nesting it's `classes` function. This
+// effectively forms a linked list in memory -- I'm not really sure I see this
+// and the `modify` definition as better than just using `[Class]` and `lookup`
+// but whatever.
+//
+// Using a hashmap and cloning here is going to be wildly inefficient. I'd need
+// to understand the use pattern better to really know how to better translate
+// it. Alternatively just `Rc` it.
+
+// The `EnvTransformer` type isn't a natural (or really viable) way to work with
+// things in Rust, so I mostly don't use it in favour of fully applying things
+// to ClassEnv. Hopefully this works out. Otherwise we might need to get more
+// clever/likely-wrong here than I'd like. I'll also use Result so we can have
+// some context.
+
+type EnvTransformer = fn(&ClassEnv) -> Result<ClassEnv>;
+
+#[derive(Clone)]
+struct ClassEnv {
+    classes: HashMap<Id, Class>,
+    defaults: Vec<Type>,
+}
+
+impl ClassEnv {
+    // so we can call the hashmap the way you'd expect if we used a function
+    // like the paper.
+    fn classes(&self, id: &Id) -> Option<&Class> {
+        self.classes.get(id)
+    }
+
+    fn super_(&self, id: &Id) -> Vec<Id> {
+        self.classes(id)
+            .expect("super is partial in the paper")
+            .supers
+            .clone()
+    }
+
+    fn insts(&self, id: &Id) -> Vec<Inst> {
+        self.classes(id)
+            .expect("super is partial in the paper")
+            .instances
+            .clone()
+    }
+
+    fn modify(&self, i: &Id, c: Class) -> ClassEnv {
+        let mut new = self.clone();
+        new.classes.insert(i.clone(), c);
+        new
+    }
+
+    fn initial() -> Self {
+        ClassEnv {
+            classes: HashMap::default(),
+            defaults: Vec::default(),
+        }
+    }
+
+    // This is our name for `<:>` since I have no idea what to call that.
+    //
+    // Here it's fully applied, so we'll probably need to be careful translating
+    // code that uses this.
+
+    fn compose(&self, f: EnvTransformer, g: EnvTransformer) -> Result<ClassEnv> {
+        g(&f(self)?)
+    }
+
+    fn add_class(&self, i: &Id, is: &[Id]) -> Result<ClassEnv> {
+        if let Some(class) = self.classes(i) {
+            Err("class already defined")
+        } else if is.iter().any(|i_| self.classes(i_).is_none()) {
+            Err("superclass not defined")
+        } else {
+            Ok(self.modify(i, Class::new(is, &[])))
+        }
+    }
+
+    fn add_inst(&self, ps: &[Pred], p: &Pred) -> Result<ClassEnv> {
+        // this could be so much better, lol
+
+        let Pred::IsIn(i, _) = p;
+        if self.classes(i).is_none() {
+            return Err("no class for instance");
+        }
+
+        fn overlap(p: &Pred, q: &Pred) -> bool {
+            mgu_pred(p, q).is_ok()
+        }
+
+        let its = self.insts(i);
+
+        // There's some important other stuff to check listed at the bottom of page 16
+
+        if its.iter().map(Qual::consequence).any(|q| overlap(p, q)) {
+            Err("overlapping instance")
+        } else {
+            let c = (self.super_(i), {
+                let its_ = its.clone();
+                its_.push(Qual::Then(ps.to_vec(), p.clone()));
+                its_
+            });
+            Ok(self.modify(i, c))
+        }
+    }
+
+    fn add_prelude_classes(&self, core: EnvTransformer, num: EnvTransformer) -> Result<ClassEnv> {
+        let mut new = self.clone();
+
+        todo!();
+    }
+}
+
+// Not sure I agree with footnote about `isJust` here. I didn't use it in favour
+// of `is_none` over `not . defined`.
+fn defined<T>(option: Option<T>) -> bool {
+    option.is_some()
+}
+
+// ### 7.3 Entailment
