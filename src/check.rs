@@ -1,6 +1,8 @@
 //! This is the core of the paper, written in mostly the same order as things
 //! are presented there.
 
+#![allow(unused_variables)]
+
 // ## Preliminaries
 
 use crate::util::{intersection, lookup, union};
@@ -9,6 +11,8 @@ use crate::util::{intersection, lookup, union};
 
 type Error = &'static str;
 type Id = String;
+
+type Result<T> = std::result::Result<T, Error>;
 
 // ## 3. Kinds
 
@@ -154,7 +158,7 @@ impl HasKind for Tycon {
 impl HasKind for Type {
     fn kind(&self) -> Kind {
         match self {
-            Type::TGen(_) => todo!(),
+            Type::TGen(_) => unimplemented!(),
             Type::Var(v) => v.kind(),
             Type::Con(c) => c.kind(),
             Type::Ap(t, _) => match t.kind() {
@@ -162,7 +166,7 @@ impl HasKind for Type {
 
                 // If the type is well-formed, we can't apply something that's
                 // not of kind `(* -> *)`.
-                _ => todo!(),
+                _ => panic!("Type is not well formed, is Ap but Kind is not (->)"),
             },
         }
     }
@@ -186,8 +190,8 @@ fn null_subst() -> Subst {
 // None of the operators in [`std::ops`] really looks like `+->`. Probably `>>`
 // is the closes option, but that seems unwise.
 
-fn maps_to(u: Tyvar, t: Type) -> Subst {
-    vec![(u, t)]
+fn maps_to(u: &Tyvar, t: &Type) -> Subst {
+    vec![(u.clone(), t.clone())]
 }
 
 /// I had to swap the argument orders here for `self` to work.
@@ -212,7 +216,7 @@ impl Types for Type {
         match self {
             Type::Var(u) => vec![u.clone()],
             Type::Ap(l, r) => union(&l.tv(), &r.tv()),
-            Type::Con(_) | Type::TGen(_) => todo!(),
+            Type::Con(_) | Type::TGen(_) => unimplemented!(),
         }
     }
 }
@@ -264,7 +268,7 @@ fn at_at(s1: &Subst, s2: &Subst) -> Subst {
 
 // Here `merge` is `@@`, but it checks that the order of the arguments won't
 // matter.
-fn merge(s1: &Subst, s2: &Subst) -> Result<Subst, Error> {
+fn merge(s1: &Subst, s2: &Subst) -> Result<Subst> {
     let s1_vars = s1.iter().map(|s| s.0.clone()).collect();
     let s2_vars = s2.iter().map(|s| s.0.clone()).collect();
 
@@ -278,3 +282,166 @@ fn merge(s1: &Subst, s2: &Subst) -> Result<Subst, Error> {
 }
 
 // ## 6. Unification and Matching
+
+// Again, we have `Monad m =>` constraints which aren't worth trying to emulate
+// in Rust, at least not here, yet. I'm going to write this with `Result` for
+// now, but leave the implementation until I have a better idea of what specific
+// `Monad m`s we need. Hopefully it's just one or two...
+
+// mgu is for 'most general unifier'.
+fn mgu(t1: &Type, t2: &Type) -> Result<Subst> {
+    match (t1, t2) {
+        (Type::Ap(l, r), Type::Ap(l_, r_)) => {
+            // Cool to see `?` work as a monad here -- it doesn't always!
+            let s1 = mgu(l, l_)?;
+            let s2 = mgu(&r.apply(&s1), &r_.apply(&s1))?;
+            Ok(at_at(&s2, &s1))
+        }
+        (Type::Var(u), t) | (t, Type::Var(u)) => var_bind(u, t),
+        (Type::Con(t1), Type::Con(t2)) if t1 == t2 => Ok(null_subst()),
+        _ => Err("types do not unify"),
+    }
+}
+
+fn var_bind(u: &Tyvar, t: &Type) -> Result<Subst> {
+    if matches!(t, Type::Var(t_) if t_ == u) {
+        Ok(null_subst())
+    } else if t.tv().contains(u) {
+        Err("occurs check fails")
+    } else if u.kind() != t.kind() {
+        Err("kinds do not match")
+    } else {
+        Ok(maps_to(u, t))
+    }
+}
+
+fn match_(t1: &Type, t2: &Type) -> Result<Subst> {
+    match (t1, t2) {
+        (Type::Ap(l, r), Type::Ap(l_, r_)) => {
+            let sl = match_(l, l_)?;
+            let sr = match_(r, r_)?;
+            merge(&sl, &sr)
+        }
+        (Type::Var(u), t) if u.kind() == t.kind() => Ok(maps_to(u, t)),
+        (Type::Con(tc1), Type::Con(tc2)) if tc1 == tc2 => Ok(null_subst()),
+        (t1, t2) => Err("types do not match"),
+    }
+}
+
+// ## 7. Type Classes, Predicates and Qualified Types
+
+// No code in this part! I should check out that Wadler and Blott (1989) paper.
+
+// ### 7.1. Basic Definition
+
+// To better match Haskell's `data Type = Constructor _`, I'm using enums here
+// with one variant like `enum Type { Constructor(_) }`. We could just use tuple
+// structs, but this lets us name the constructors to better match the paper.
+
+#[derive(Debug, Clone, PartialEq)]
+enum Qual<T> {
+    // This is the `:=>` constructor in
+    Then(Vec<Pred>, T),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Pred {
+    IsIn(Id, Type),
+}
+
+impl<T> Types for Qual<T>
+where
+    T: Types,
+{
+    fn apply(&self, s: &Subst) -> Self {
+        let Qual::Then(ps, t) = self;
+        Qual::Then(ps.apply(s), t.apply(s))
+    }
+
+    fn tv(&self) -> Vec<Tyvar> {
+        let Qual::Then(ps, t) = self;
+        union(&ps.tv(), &t.tv())
+    }
+}
+
+impl Types for Pred {
+    fn apply(&self, s: &Subst) -> Self {
+        let Pred::IsIn(i, t) = self;
+        Pred::IsIn(i.clone(), t.apply(s))
+    }
+
+    fn tv(&self) -> Vec<Tyvar> {
+        let Pred::IsIn(i, t) = self;
+        t.tv()
+    }
+}
+
+fn mgu_pred(a: &Pred, b: &Pred) -> Result<Subst> {
+    lift(mgu, a, b)
+}
+
+fn match_pred(a: &Pred, b: &Pred) -> Result<Subst> {
+    lift(match_, a, b)
+}
+
+// Here come the primes. I'll use `_` in place of `'` where I can.
+
+fn lift<M>(m: M, a: &Pred, b: &Pred) -> Result<Subst>
+where
+    M: Fn(&Type, &Type) -> Result<Subst>,
+{
+    let Pred::IsIn(i, t) = a;
+    let Pred::IsIn(i_, t_) = b;
+
+    if i == i_ {
+        m(t, t_)
+    } else {
+        Err("classes differ")
+    }
+}
+
+type Class = (Vec<Id>, Vec<Inst>);
+type Inst = Qual<Pred>;
+
+fn ord_example() -> Class {
+    (
+        // This part tells us that Eq is a 'superclass' of Ord,
+        // it's the `class Eq => Ord` part.
+        vec![String::from("Eq")],
+        // These are instances of the class
+        vec![
+            // This is the `instance Ord _ where` part for unit, char, int.
+            // Notice this isn't the implementation, just the type level stuff.
+            Qual::Then(vec![], Pred::IsIn(String::from("Ord"), prim::unit())),
+            Qual::Then(vec![], Pred::IsIn(String::from("Ord"), prim::character())),
+            Qual::Then(vec![], Pred::IsIn(String::from("Ord"), prim::int())),
+            // This one is `Ord a, Ord b => Ord (a, b)`
+            Qual::Then(
+                vec![
+                    // Ord a constraint
+                    Pred::IsIn(
+                        String::from("Ord"),
+                        Type::Var(Tyvar(String::from("a"), Kind::Star)),
+                    ),
+                    // Ord b constraint
+                    Pred::IsIn(
+                        String::from("Ord"),
+                        Type::Var(Tyvar(String::from("b"), Kind::Star)),
+                    ),
+                ],
+                // => Ord (a, b)
+                Pred::IsIn(
+                    String::from("Ord"),
+                    pair(
+                        Type::Var(Tyvar(String::from("a"), Kind::Star)),
+                        Type::Var(Tyvar(String::from("b"), Kind::Star)),
+                    ),
+                ),
+            ),
+        ],
+    )
+}
+
+// This is another place where I'm appreciating Haskell's brevity.
+
+// ### 7.2 Class Environments
