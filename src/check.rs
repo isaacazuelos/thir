@@ -74,38 +74,20 @@ pub struct Tycon(Id, Kind);
 // naming scheme used in the paper. A name like `prim::unit` is `tUnit` in the
 // paper.
 //
-// These are functions with no arguments since I can't make the `String` for the
-// IDs in `const` contexts.
+// The types with arrow kinds are functions since I can't make the boxes for the
+// arrow kinds in while `const`.
 //
 // This is something we'd want to do as part of creating the context in that
 // data-oriented approach.
-
 mod prim {
     use super::*;
 
-    pub fn unit() -> Type {
-        Type::Con(Tycon("()", Kind::Star))
-    }
-
-    pub fn character() -> Type {
-        Type::Con(Tycon("Char", Kind::Star))
-    }
-
-    pub fn int() -> Type {
-        Type::Con(Tycon("Int", Kind::Star))
-    }
-
-    pub fn integer() -> Type {
-        Type::Con(Tycon("Integer", Kind::Star))
-    }
-
-    pub fn float() -> Type {
-        Type::Con(Tycon("Float", Kind::Star))
-    }
-
-    pub fn double() -> Type {
-        Type::Con(Tycon("Double", Kind::Star))
-    }
+    pub const UNIT: Type = Type::Con(Tycon("()", Kind::Star));
+    pub const CHARACTER: Type = Type::Con(Tycon("Char", Kind::Star));
+    pub const INT: Type = Type::Con(Tycon("Int", Kind::Star));
+    pub const INTEGER: Type = Type::Con(Tycon("Integer", Kind::Star));
+    pub const FLOAT: Type = Type::Con(Tycon("Float", Kind::Star));
+    pub const DOUBLE: Type = Type::Con(Tycon("Double", Kind::Star));
 
     pub fn list() -> Type {
         Type::Con(Tycon("[]", Kind::fun(Kind::Star, Kind::Star)))
@@ -118,7 +100,7 @@ mod prim {
         ))
     }
 
-    pub fn tuple2() -> Type {
+    pub fn tuple_2() -> Type {
         Type::Con(Tycon(
             "(,)",
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
@@ -126,7 +108,7 @@ mod prim {
     }
 
     pub fn string() -> Type {
-        super::list(character())
+        super::list(CHARACTER)
     }
 }
 
@@ -142,7 +124,7 @@ fn list(t: Type) -> Type {
 }
 
 fn pair(a: Type, b: Type) -> Type {
-    prim::tuple2().app(a).app(b)
+    prim::tuple_2().app(a).app(b)
 }
 
 trait HasKind {
@@ -209,7 +191,7 @@ trait Types {
 impl Types for Type {
     fn apply(&self, s: &Subst) -> Self {
         match self {
-            Type::Var(u) => match lookup(u, &s) {
+            Type::Var(u) => match lookup(u, s) {
                 Some(t) => t.clone(),
                 None => self.clone(),
             },
@@ -275,8 +257,8 @@ fn at_at(s1: &Subst, s2: &Subst) -> Subst {
 // Here `merge` is `@@`, but it checks that the order of the arguments won't
 // matter.
 fn merge(s1: &Subst, s2: &Subst) -> Result<Subst> {
-    let s1_vars = s1.iter().map(|s| s.0.clone()).collect();
-    let s2_vars = s2.iter().map(|s| s.0.clone()).collect();
+    let s1_vars: Vec<_> = s1.iter().map(|s| s.0.clone()).collect();
+    let s2_vars: Vec<_> = s2.iter().map(|s| s.0.clone()).collect();
 
     for v in intersection(&s1_vars, &s2_vars) {
         if Type::Var(v.clone()).apply(s1) != Type::Var(v).apply(s2) {
@@ -384,7 +366,7 @@ where
 impl Types for Pred {
     fn apply(&self, s: &Subst) -> Self {
         let Pred::IsIn(i, t) = self;
-        Pred::IsIn(i.clone(), t.apply(s))
+        Pred::IsIn(i, t.apply(s))
     }
 
     fn tv(&self) -> Vec<Tyvar> {
@@ -445,9 +427,9 @@ fn ord_example() -> Class {
         &[
             // This is the `instance Ord _ where` part for unit, char, int.
             // Notice this isn't the implementation, just the type level stuff.
-            Qual::then(&[], &Pred::IsIn("Ord", prim::unit())),
-            Qual::then(&[], &Pred::IsIn("Ord", prim::character())),
-            Qual::then(&[], &Pred::IsIn("Ord", prim::int())),
+            Qual::then(&[], &Pred::IsIn("Ord", prim::UNIT)),
+            Qual::then(&[], &Pred::IsIn("Ord", prim::CHARACTER)),
+            Qual::then(&[], &Pred::IsIn("Ord", prim::INT)),
             // This one is `Ord a, Ord b => Ord (a, b)`
             Qual::then(
                 &[
@@ -503,27 +485,27 @@ struct ClassEnv {
 impl ClassEnv {
     // so we can call the hashmap the way you'd expect if we used a function
     // like the paper.
-    fn classes(&self, id: &Id) -> Option<&Class> {
+    fn classes(&self, id: Id) -> Option<&Class> {
         self.classes.get(id)
     }
 
-    fn super_(&self, id: &Id) -> Vec<Id> {
-        self.classes(id)
+    fn super_(&self, id: Id) -> &[Id] {
+        &self
+            .classes(id)
             .expect("super is partial in the paper")
             .supers
-            .clone()
     }
 
-    fn insts(&self, id: &Id) -> Vec<Inst> {
-        self.classes(id)
+    fn insts(&self, id: Id) -> &[Inst] {
+        &self
+            .classes(id)
             .expect("super is partial in the paper")
             .instances
-            .clone()
     }
 
-    fn modify(&self, i: &Id, c: Class) -> ClassEnv {
+    fn modify(&self, i: Id, c: Class) -> ClassEnv {
         let mut new = self.clone();
-        new.classes.insert(i.clone(), c);
+        new.classes.insert(i, c);
         new
     }
 
@@ -543,49 +525,121 @@ impl ClassEnv {
         g(&f(self)?)
     }
 
-    fn add_class(&self, i: &Id, is: &[Id]) -> Result<ClassEnv> {
-        if let Some(class) = self.classes(i) {
-            Err("class already defined")
-        } else if is.iter().any(|i_| self.classes(i_).is_none()) {
-            Err("superclass not defined")
-        } else {
-            Ok(self.modify(i, Class::new(is, &[])))
-        }
+    fn add_class(&self, i: Id, is: &[Id]) -> Result<ClassEnv> {
+        let mut new = self.clone();
+        new.add_class_mut(i, is)?;
+        Ok(new)
     }
 
     fn add_inst(&self, ps: &[Pred], p: &Pred) -> Result<ClassEnv> {
-        // this could be so much better, lol
-
-        let Pred::IsIn(i, _) = p;
-        if self.classes(i).is_none() {
-            return Err("no class for instance");
-        }
-
-        fn overlap(p: &Pred, q: &Pred) -> bool {
-            mgu_pred(p, q).is_ok()
-        }
-
-        let its = self.insts(i);
-
-        // There's some important other stuff to check listed at the bottom of page 16
-
-        if its.iter().map(Qual::consequence).any(|q| overlap(p, q)) {
-            Err("overlapping instance")
-        } else {
-            let c = (self.super_(i), {
-                let its_ = its.clone();
-                its_.push(Qual::Then(ps.to_vec(), p.clone()));
-                its_
-            });
-            Ok(self.modify(i, c))
-        }
+        let mut new = self.clone();
+        new.add_inst_mut(ps, p)?;
+        Ok(new)
     }
 
-    fn add_prelude_classes(&self, core: EnvTransformer, num: EnvTransformer) -> Result<ClassEnv> {
+    fn add_prelude_classes(&self) -> Result<ClassEnv> {
         let mut new = self.clone();
 
-        todo!();
+        new.add_core_classes_mut()?;
+        new.add_num_classes_mut()?;
+
+        Ok(new)
     }
+
+    fn example_insts(&self) -> Result<ClassEnv> {
+        let mut new = self.add_prelude_classes()?;
+
+        new.add_inst_mut(&[], &Pred::IsIn("Ord", prim::UNIT))?;
+        new.add_inst_mut(&[], &Pred::IsIn("Ord", prim::CHARACTER))?;
+        new.add_inst_mut(&[], &Pred::IsIn("Ord", prim::INT))?;
+        new.add_inst_mut(
+            &[
+                Pred::IsIn("Ord", Type::Var(Tyvar("a", Kind::Star))),
+                Pred::IsIn("Ord", Type::Var(Tyvar("b", Kind::Star))),
+            ],
+            &Pred::IsIn(
+                "Ord",
+                pair(
+                    Type::Var(Tyvar("a", Kind::Star)),
+                    Type::Var(Tyvar("b", Kind::Star)),
+                ),
+            ),
+        )?;
+
+        Ok(new)
+    }
+
+    // Cheating, don't tell Mr. Haskell!
+
+    fn add_core_classes_mut(&mut self) -> Result<()> {
+        self.add_class_mut("Eq", &[])?;
+        self.add_class_mut("Ord", &["Eq"])?;
+        self.add_class_mut("Show", &[])?;
+        self.add_class_mut("Read", &[])?;
+        self.add_class_mut("Bounded", &[])?;
+        self.add_class_mut("Enum", &[])?;
+        self.add_class_mut("Functor", &[])?;
+        self.add_class_mut("Monad", &[])
+    }
+
+    fn add_num_classes_mut(&mut self) -> Result<()> {
+        self.add_class_mut("Num", &["Eq", "Show"])?;
+        self.add_class_mut("Real", &["Num", "Ord"])?;
+        self.add_class_mut("Fractional", &["Num"])?;
+        self.add_class_mut("Integral", &["Real", "Enum"])?;
+        self.add_class_mut("RealFrac", &["Real", "Fractional"])?;
+        self.add_class_mut("Floating", &["Fractional"])?;
+        self.add_class_mut("RealFloat", &["ReadFrac, Floating"])
+    }
+
+    fn add_class_mut(&mut self, id: Id, supers: &[Id]) -> Result<()> {
+        if let Some(class) = self.classes(id) {
+            Err("class already defined")
+        } else if supers.iter().any(|super_| self.classes(super_).is_none()) {
+            Err("superclass not defined")
+        } else {
+            let class = Class::new(supers, &[]);
+            self.classes.insert(id, class);
+            Ok(())
+        }
+    }
+
+    fn add_inst_mut(&mut self, ps: &[Pred], p: &Pred) -> Result<()> {
+        let Pred::IsIn(id, _) = p;
+
+        // we could skip this check if `insts` return a result
+        if self.classes(id).is_none() {
+            return Err("no class instance");
+        }
+
+        if self
+            .insts(id)
+            .iter()
+            .map(Qual::consequence)
+            .any(|q| overlap(p, q))
+        {
+            return Err("overlapping instance");
+        }
+
+        // There's some important other stuff to check listed at the bottom of
+        // page 16, but the paper doesn't do it so I won't here.
+
+        // We mutate the existing class definition to add our new instance.
+        //
+        // This adds it to the end instead of head, but since overlapping
+        // instances aren't legal, we know it's unique so it doesn't matter.
+        self.classes
+            .get_mut(id)
+            .expect("checked above")
+            .instances
+            .push(Qual::then(ps, p));
+
+        Ok(())
+    }
+}
+
+fn overlap(p: &Pred, q: &Pred) -> bool {
+    mgu_pred(p, q).is_ok()
 }
 
 // Not sure I agree with footnote about `isJust` here. I didn't use it in favour

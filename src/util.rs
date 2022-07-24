@@ -3,7 +3,7 @@
 //! Since I shouldn't be using `Vec` but instead some kind of iterator adapters,
 //! these aren't exactly worried about efficiency.
 
-pub fn lookup<'a, K, V>(key: &K, vec: &'a Vec<(K, V)>) -> Option<&'a V>
+pub fn lookup<'a, K, V>(key: &K, vec: &'a [(K, V)]) -> Option<&'a V>
 where
     K: PartialEq,
 {
@@ -16,11 +16,11 @@ where
     None
 }
 
-pub fn union<T>(left: &Vec<T>, right: &Vec<T>) -> Vec<T>
+pub fn union<T>(left: &[T], right: &[T]) -> Vec<T>
 where
     T: PartialEq + Clone,
 {
-    let mut buf = left.clone();
+    let mut buf = left.to_vec();
 
     for v in right {
         buf.push(v.clone());
@@ -30,7 +30,7 @@ where
     buf
 }
 
-pub fn intersection<T>(left: &Vec<T>, right: &Vec<T>) -> Vec<T>
+pub fn intersection<T>(left: &[T], right: &[T]) -> Vec<T>
 where
     T: PartialEq + Clone,
 {
