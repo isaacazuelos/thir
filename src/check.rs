@@ -649,3 +649,49 @@ fn defined<T>(option: Option<T>) -> bool {
 }
 
 // ### 7.3 Entailment
+
+impl ClassEnv {
+    fn by_super(&self, p: &Pred) -> Vec<Pred> {
+        let Pred::IsIn(i, t) = p;
+
+        let mut buf: Vec<Pred> = self
+            .super_(i)
+            .iter()
+            .flat_map(|i_| self.by_super(&Pred::IsIn(i_, t.clone())))
+            .collect();
+
+        buf.push(p.clone());
+
+        buf
+    }
+
+    fn by_inst(&self, p: &Pred) -> Result<Vec<Pred>> {
+        let Pred::IsIn(i, t) = p;
+
+        let mut buf = Vec::new();
+
+        for Qual::Then(ps, h) in self.insts(i) {
+            let u = match_pred(h, p)?;
+
+            for p in ps {
+                buf.push(p.apply(&u));
+            }
+        }
+
+        Ok(buf)
+    }
+
+    fn entail(&self, ps: &[Pred], p: &Pred) -> bool {
+        // This `|| match` is in the Haskell too, and I really don't like it
+        // there either. Weird choice.
+        ps.iter()
+            .map(|p| self.by_super(p))
+            .any(|supers| supers.contains(p))
+            || match self.by_inst(p) {
+                Err(_) => false,
+                Ok(qs) => qs.iter().all(|q| self.entail(ps, q)),
+            }
+    }
+}
+
+// ## 7.4 Context Reduction
