@@ -694,4 +694,86 @@ impl ClassEnv {
     }
 }
 
-// ## 7.4 Context Reduction
+// ### 7.4 Context Reduction
+
+impl Pred {
+    fn in_hfn(&self) -> bool {
+        let Pred::IsIn(c, t) = self;
+
+        fn hnf(t: &Type) -> bool {
+            match t {
+                Type::Var(_) => true,
+                Type::Con(_) => false,
+                Type::Ap(t, _) => hnf(t),
+                Type::TGen(_) => todo!(),
+            }
+        }
+
+        hnf(t)
+    }
+}
+
+impl ClassEnv {
+    fn to_hnfs(&self, ps: &[Pred]) -> Result<Vec<Pred>> {
+        let mut buf = Vec::new();
+
+        for pss in ps.iter().map(|p| self.to_hnf(p)) {
+            buf.extend(pss?)
+        }
+
+        Ok(buf)
+    }
+
+    fn to_hnf(&self, p: &Pred) -> Result<Vec<Pred>> {
+        if p.in_hfn() {
+            Ok(vec![p.clone()])
+        } else {
+            match self.by_inst(p) {
+                Err(_) => Err("context reduction"),
+                Ok(ps) => self.to_hnfs(&ps),
+            }
+        }
+    }
+
+    fn simplify(&self, ps: &[Pred]) -> Vec<Pred> {
+        // Here's one of the few places where the iterative solution is clearer
+        // to me, it's how the text of the paper describes things too.
+
+        let mut rs = Vec::new();
+
+        for p in ps {
+            if !self.entail(&union(&rs, ps), p) {
+                rs.push(p.clone());
+            }
+        }
+
+        rs
+    }
+
+    fn reduce(&self, ps: &[Pred]) -> Result<Vec<Pred>> {
+        // I love `?` so much. It works so well for `do` code in error-handling
+        // monads, since it's _almost_ the same thing.
+        let qs = self.to_hnfs(ps)?;
+        Ok(self.simplify(&qs))
+    }
+
+    fn sc_entail(&self, ps: &[Pred], p: &Pred) -> bool {
+        ps.iter().map(|q| self.by_super(q)).any(|s| s.contains(p))
+    }
+}
+
+// I think if we use impl Iterator everywhere instead of `&[]` or `Vec`, this
+// could be pretty OK. So many clones and Vec allocations. But Haskell's lists
+// are lazy, and behave a lot like iterators -- WHNF of `:` is `next` returning
+// `Some`, and `[]` means `None`. The iterators mutate, so we don't have a rhs
+// to `:`. I wrote a blog draft about this once -- it's actually super cool how
+// it works out if you do the WHNF eval by hand.
+
+// ## 8. Type Schemes
+
+#[derive(Debug, Clone, PartialEq)]
+enum Scheme {
+    ForAll(Vec<Kind>, Qual<Type>),
+}
+
+// Okay, I actually need to stop, it's getting late.
