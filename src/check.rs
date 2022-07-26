@@ -1,5 +1,9 @@
 //! This is the core of the paper, written in mostly the same order as things
 //! are presented there.
+//!
+//! As will be immediately clear, this is _not_ idiomatic Rust at all. The point
+//! here is to get the algorithm in the paper working. I can worry about making
+//! it idiomatic later.
 
 #![allow(unused_variables)]
 
@@ -7,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::util::{intersection, lookup, union};
+use crate::util::{append, intersection, lookup, union};
 
 // For simplicity, we're not worrying too much about reducing shared references.
 
@@ -15,7 +19,11 @@ type Error = &'static str;
 
 // kind of ties our hands at defining new ones, but it's nicer to avoid all the
 // `.into` calls for now.
-type Id = &'static str;
+type Id = String;
+
+fn enum_id(i: usize) -> Id {
+    format!("v{i}")
+}
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -47,7 +55,7 @@ pub enum Type {
     Var(Tyvar),
     Con(Tycon),
     Ap(Box<Type>, Box<Type>),
-    TGen(usize), // for Type Schemes, not used until section 8
+    Gen(usize), // for Type Schemes, not used until section 8
 }
 
 impl Type {
@@ -82,33 +90,50 @@ pub struct Tycon(Id, Kind);
 mod prim {
     use super::*;
 
-    pub const UNIT: Type = Type::Con(Tycon("()", Kind::Star));
-    pub const CHARACTER: Type = Type::Con(Tycon("Char", Kind::Star));
-    pub const INT: Type = Type::Con(Tycon("Int", Kind::Star));
-    pub const INTEGER: Type = Type::Con(Tycon("Integer", Kind::Star));
-    pub const FLOAT: Type = Type::Con(Tycon("Float", Kind::Star));
-    pub const DOUBLE: Type = Type::Con(Tycon("Double", Kind::Star));
+    pub fn unit() -> Type {
+        Type::Con(Tycon("()".into(), Kind::Star))
+    }
+
+    pub fn character() -> Type {
+        Type::Con(Tycon("Char".into(), Kind::Star))
+    }
+
+    pub fn int() -> Type {
+        Type::Con(Tycon("Int".into(), Kind::Star))
+    }
+
+    pub fn integer() -> Type {
+        Type::Con(Tycon("Integer".into(), Kind::Star))
+    }
+
+    pub fn float() -> Type {
+        Type::Con(Tycon("Float".into(), Kind::Star))
+    }
+
+    pub fn double() -> Type {
+        Type::Con(Tycon("Double".into(), Kind::Star))
+    }
 
     pub fn list() -> Type {
-        Type::Con(Tycon("[]", Kind::fun(Kind::Star, Kind::Star)))
+        Type::Con(Tycon("[]".into(), Kind::fun(Kind::Star, Kind::Star)))
     }
 
     pub fn arrow() -> Type {
         Type::Con(Tycon(
-            "(->)",
+            "(->)".into(),
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
         ))
     }
 
     pub fn tuple_2() -> Type {
         Type::Con(Tycon(
-            "(,)",
+            "(,)".into(),
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
         ))
     }
 
     pub fn string() -> Type {
-        super::list(CHARACTER)
+        super::list(character())
     }
 }
 
@@ -146,7 +171,7 @@ impl HasKind for Tycon {
 impl HasKind for Type {
     fn kind(&self) -> &Kind {
         match self {
-            Type::TGen(_) => unimplemented!(),
+            Type::Gen(_) => unimplemented!(),
             Type::Var(v) => v.kind(),
             Type::Con(c) => c.kind(),
             Type::Ap(t, _) => match t.kind() {
@@ -204,7 +229,7 @@ impl Types for Type {
         match self {
             Type::Var(u) => vec![u.clone()],
             Type::Ap(l, r) => union(&l.tv(), &r.tv()),
-            Type::Con(_) | Type::TGen(_) => unimplemented!(),
+            Type::Con(_) | Type::Gen(_) => unimplemented!(),
         }
     }
 }
@@ -333,8 +358,8 @@ enum Qual<T> {
 }
 
 impl<T: Clone> Qual<T> {
-    fn then(pred: &[Pred], t: &T) -> Qual<T> {
-        Qual::Then(pred.into(), t.clone())
+    fn then(pred: &[Pred], t: T) -> Qual<T> {
+        Qual::Then(pred.into(), t)
     }
 
     fn consequence(&self) -> &T {
@@ -346,6 +371,12 @@ impl<T: Clone> Qual<T> {
 #[derive(Debug, Clone, PartialEq)]
 enum Pred {
     IsIn(Id, Type),
+}
+
+impl Pred {
+    fn is_in(id: impl Into<String>, t: Type) -> Pred {
+        Pred::IsIn(id.into(), t)
+    }
 }
 
 impl<T> Types for Qual<T>
@@ -366,7 +397,7 @@ where
 impl Types for Pred {
     fn apply(&self, s: &Subst) -> Self {
         let Pred::IsIn(i, t) = self;
-        Pred::IsIn(i, t.apply(s))
+        Pred::IsIn(i.into(), t.apply(s))
     }
 
     fn tv(&self) -> Vec<Tyvar> {
@@ -422,28 +453,28 @@ fn ord_example() -> Class {
     Class::new(
         // This part tells us that Eq is a 'superclass' of Ord,
         // it's the `class Eq => Ord` part.
-        &["Eq"],
+        &["Eq".into()],
         // These are instances of the class
         &[
             // This is the `instance Ord _ where` part for unit, char, int.
             // Notice this isn't the implementation, just the type level stuff.
-            Qual::then(&[], &Pred::IsIn("Ord", prim::UNIT)),
-            Qual::then(&[], &Pred::IsIn("Ord", prim::CHARACTER)),
-            Qual::then(&[], &Pred::IsIn("Ord", prim::INT)),
+            Qual::then(&[], Pred::is_in("Ord", prim::unit())),
+            Qual::then(&[], Pred::is_in("Ord", prim::character())),
+            Qual::then(&[], Pred::is_in("Ord", prim::int())),
             // This one is `Ord a, Ord b => Ord (a, b)`
             Qual::then(
                 &[
                     // Ord a constraint
-                    Pred::IsIn("Ord", Type::Var(Tyvar("a", Kind::Star))),
+                    Pred::is_in("Ord", Type::Var(Tyvar("a".into(), Kind::Star))),
                     // Ord b constraint
-                    Pred::IsIn("Ord", Type::Var(Tyvar("b", Kind::Star))),
+                    Pred::is_in("Ord", Type::Var(Tyvar("b".into(), Kind::Star))),
                 ],
                 // => Ord (a, b)
-                &Pred::IsIn(
-                    "Ord",
+                Pred::IsIn(
+                    "Ord".into(),
                     pair(
-                        Type::Var(Tyvar("a", Kind::Star)),
-                        Type::Var(Tyvar("b", Kind::Star)),
+                        Type::Var(Tyvar("a".into(), Kind::Star)),
+                        Type::Var(Tyvar("b".into(), Kind::Star)),
                     ),
                 ),
             ),
@@ -485,18 +516,18 @@ struct ClassEnv {
 impl ClassEnv {
     // so we can call the hashmap the way you'd expect if we used a function
     // like the paper.
-    fn classes(&self, id: Id) -> Option<&Class> {
+    fn classes(&self, id: &Id) -> Option<&Class> {
         self.classes.get(id)
     }
 
-    fn super_(&self, id: Id) -> &[Id] {
+    fn super_(&self, id: &Id) -> &[Id] {
         &self
             .classes(id)
             .expect("super is partial in the paper")
             .supers
     }
 
-    fn insts(&self, id: Id) -> &[Inst] {
+    fn insts(&self, id: &Id) -> &[Inst] {
         &self
             .classes(id)
             .expect("super is partial in the paper")
@@ -527,7 +558,9 @@ impl ClassEnv {
 
     fn add_class(&self, i: Id, is: &[Id]) -> Result<ClassEnv> {
         let mut new = self.clone();
-        new.add_class_mut(i, is)?;
+
+        let is: Vec<&str> = is.iter().map(AsRef::as_ref).collect(); // buh
+        new.add_class_mut(i, &is)?;
         Ok(new)
     }
 
@@ -549,19 +582,19 @@ impl ClassEnv {
     fn example_insts(&self) -> Result<ClassEnv> {
         let mut new = self.add_prelude_classes()?;
 
-        new.add_inst_mut(&[], &Pred::IsIn("Ord", prim::UNIT))?;
-        new.add_inst_mut(&[], &Pred::IsIn("Ord", prim::CHARACTER))?;
-        new.add_inst_mut(&[], &Pred::IsIn("Ord", prim::INT))?;
+        new.add_inst_mut(&[], &Pred::is_in("Ord", prim::unit()))?;
+        new.add_inst_mut(&[], &Pred::is_in("Ord", prim::character()))?;
+        new.add_inst_mut(&[], &Pred::is_in("Ord", prim::int()))?;
         new.add_inst_mut(
             &[
-                Pred::IsIn("Ord", Type::Var(Tyvar("a", Kind::Star))),
-                Pred::IsIn("Ord", Type::Var(Tyvar("b", Kind::Star))),
+                Pred::is_in("Ord", Type::Var(Tyvar("a".into(), Kind::Star))),
+                Pred::is_in("Ord", Type::Var(Tyvar("b".into(), Kind::Star))),
             ],
             &Pred::IsIn(
-                "Ord",
+                "Ord".into(),
                 pair(
-                    Type::Var(Tyvar("a", Kind::Star)),
-                    Type::Var(Tyvar("b", Kind::Star)),
+                    Type::Var(Tyvar("a".into(), Kind::Star)),
+                    Type::Var(Tyvar("b".into(), Kind::Star)),
                 ),
             ),
         )?;
@@ -592,13 +625,16 @@ impl ClassEnv {
         self.add_class_mut("RealFloat", &["ReadFrac, Floating"])
     }
 
-    fn add_class_mut(&mut self, id: Id, supers: &[Id]) -> Result<()> {
-        if let Some(class) = self.classes(id) {
+    fn add_class_mut(&mut self, id: impl Into<Id>, supers: &[&str]) -> Result<()> {
+        let id = id.into();
+        let supers: Vec<Id> = supers.iter().map(|s| String::from(*s)).collect();
+        if let Some(class) = self.classes(&id) {
             Err("class already defined")
         } else if supers.iter().any(|super_| self.classes(super_).is_none()) {
             Err("superclass not defined")
         } else {
-            let class = Class::new(supers, &[]);
+            let supers: Vec<_> = supers.iter().map(|s| s.into()).collect();
+            let class = Class::new(&supers, &[]);
             self.classes.insert(id, class);
             Ok(())
         }
@@ -632,7 +668,7 @@ impl ClassEnv {
             .get_mut(id)
             .expect("checked above")
             .instances
-            .push(Qual::then(ps, p));
+            .push(Qual::then(ps, p.clone()));
 
         Ok(())
     }
@@ -657,7 +693,7 @@ impl ClassEnv {
         let mut buf: Vec<Pred> = self
             .super_(i)
             .iter()
-            .flat_map(|i_| self.by_super(&Pred::IsIn(i_, t.clone())))
+            .flat_map(|i_| self.by_super(&Pred::IsIn(i_.clone(), t.clone())))
             .collect();
 
         buf.push(p.clone());
@@ -705,7 +741,7 @@ impl Pred {
                 Type::Var(_) => true,
                 Type::Con(_) => false,
                 Type::Ap(t, _) => hnf(t),
-                Type::TGen(_) => todo!(),
+                Type::Gen(_) => todo!(),
             }
         }
 
@@ -756,10 +792,6 @@ impl ClassEnv {
         let qs = self.to_hnfs(ps)?;
         Ok(self.simplify(&qs))
     }
-
-    fn sc_entail(&self, ps: &[Pred], p: &Pred) -> bool {
-        ps.iter().map(|q| self.by_super(q)).any(|s| s.contains(p))
-    }
 }
 
 // I think if we use impl Iterator everywhere instead of `&[]` or `Vec`, this
@@ -777,3 +809,238 @@ enum Scheme {
 }
 
 // Okay, I actually need to stop, it's getting late.
+
+impl Types for Scheme {
+    fn apply(&self, s: &Subst) -> Self {
+        let Scheme::ForAll(ks, qt) = self.clone();
+        Scheme::ForAll(ks, qt.apply(s))
+    }
+
+    fn tv(&self) -> Vec<Tyvar> {
+        let Scheme::ForAll(ks, qt) = self.clone();
+        qt.tv()
+    }
+}
+
+fn quantify(vs: &[Tyvar], qt: Qual<Type>) -> Scheme {
+    let vs_: Vec<Tyvar> = qt.tv().iter().filter(|v| vs.contains(v)).cloned().collect();
+    let ks = vs_.iter().map(|v| v.kind().clone()).collect();
+    let s = vs_
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.clone(), Type::Gen(i)))
+        .collect();
+
+    Scheme::ForAll(ks, qt.apply(&s))
+}
+
+impl From<Type> for Scheme {
+    fn from(t: Type) -> Self {
+        Scheme::ForAll(vec![], Qual::Then(vec![], t))
+    }
+}
+
+// ## 9. Assumptions
+
+// I'm not going to try and come up with a name for `:>:`
+
+#[derive(Debug, Clone)]
+struct Assump(Id, Scheme);
+
+impl Types for Assump {
+    fn apply(&self, s: &Subst) -> Self {
+        let Assump(i, sc) = self;
+        Assump(i.clone(), sc.apply(s))
+    }
+
+    fn tv(&self) -> Vec<Tyvar> {
+        let Assump(i, sc) = self;
+        sc.tv()
+    }
+}
+
+fn find(i: Id, assumptions: &[Assump]) -> Result<Scheme> {
+    for Assump(i_, sc) in assumptions {
+        if i == *i_ {
+            return Ok(sc.clone());
+        }
+    }
+    Err("unbound identifier")
+}
+
+// ## 10. A Type Inference Monad
+//
+// Well, not really.
+
+struct TI {
+    substitutions: Subst,
+    next_var: usize,
+}
+
+impl TI {
+    fn get_subst(&self) -> &Subst {
+        &self.substitutions
+    }
+
+    fn unify(&mut self, t1: &Type, t2: &Type) -> Result<()> {
+        let s = self.get_subst();
+        let u = mgu(&t1.apply(s), &t2.apply(s))?;
+        self.ext_subst(&u);
+        Ok(())
+    }
+
+    fn ext_subst(&mut self, s: &Subst) {
+        // We should _definitely_ look at the definition of `at_at` and unpack
+        // things a bit here.
+        self.substitutions = at_at(&self.substitutions, s);
+    }
+
+    fn new_type_var(&mut self, k: Kind) -> Type {
+        let i = self.next_var;
+        self.next_var += 1;
+        Type::Var(Tyvar(enum_id(i), k))
+    }
+
+    fn fresh_inst(&mut self, s: &Scheme) -> Qual<Type> {
+        let Scheme::ForAll(ks, qt) = s;
+
+        let ts: Vec<_> = ks.iter().map(|k| self.new_type_var(k.clone())).collect();
+
+        qt.inst(&ts)
+    }
+}
+
+trait Instantiate {
+    fn inst(&self, ts: &[Type]) -> Self;
+}
+
+impl Instantiate for Type {
+    fn inst(&self, ts: &[Type]) -> Type {
+        match self {
+            Type::Ap(l, r) => l.inst(ts).app(r.inst(ts)),
+            Type::Gen(n) => ts[*n].clone(),
+            t => t.clone(),
+        }
+    }
+}
+
+impl Instantiate for Vec<Type> {
+    fn inst(&self, ts: &[Type]) -> Vec<Type> {
+        self.iter().map(|t| t.inst(ts)).collect()
+    }
+}
+
+impl<T: Instantiate> Instantiate for Qual<T> {
+    fn inst(&self, ts: &[Type]) -> Qual<T> {
+        todo!()
+    }
+}
+
+impl Instantiate for Pred {
+    fn inst(&self, ts: &[Type]) -> Pred {
+        todo!()
+    }
+}
+
+// ## 11. Type Inference
+//
+// Here we go!
+
+// I will not be using this.
+type Infer<E, T> = fn(&mut TI, &ClassEnv, &[Assump], E) -> Result<(Vec<Pred>, T)>;
+
+#[derive(Debug, Clone, PartialEq)]
+enum Literal {
+    Int(i64),
+    Char(char),
+    Rat(f64), // I know, but close enough.
+    Str(String),
+}
+
+impl TI {
+    fn lit(&mut self, l: &Literal) -> (Vec<Pred>, Type) {
+        match l {
+            Literal::Char(_) => (vec![], prim::character()),
+            Literal::Int(_) => {
+                let v = self.new_type_var(Kind::Star);
+                (vec![Pred::IsIn("Num".into(), v.clone())], v)
+            }
+            Literal::Str(_) => (vec![], prim::string()),
+            Literal::Rat(_) => {
+                let v = self.new_type_var(Kind::Star);
+                (vec![Pred::IsIn("Fractional".into(), v.clone())], v)
+            }
+        }
+    }
+}
+
+// ### 11.2 Patterns
+
+#[derive(Debug, Clone)]
+enum Pat {
+    Var(Id),               // `a`
+    Wildcard,              // `_`
+    As(Id, Box<Pat>),      // `id@pat`
+    Lit(Literal),          // `1`
+    Npk(Id, usize),        // `n + k` patterns, which are a sin
+    Con(Assump, Vec<Pat>), // `Constructor(**pats)`, not sure what Assump is
+}
+
+impl TI {
+    fn pat(&mut self, p: &Pat) -> (Vec<Pred>, Vec<Assump>, Type) {
+        match p {
+            Pat::Var(i) => {
+                let v = self.new_type_var(Kind::Star);
+                (vec![], vec![Assump(i.clone(), v.clone().into())], v)
+            }
+            Pat::Wildcard => {
+                let v = self.new_type_var(Kind::Star);
+                (vec![], vec![], v)
+            }
+            Pat::As(i, pat) => {
+                let (ps, mut as_, t) = self.pat(pat);
+                as_.push(Assump(i.clone(), t.clone().into()));
+                (ps, as_, t)
+            }
+            Pat::Lit(l) => {
+                let (ps, t) = self.lit(l);
+                (ps, vec![], t)
+            }
+            Pat::Npk(i, k) => {
+                let t = self.new_type_var(Kind::Star);
+                (
+                    vec![Pred::IsIn("Integeral".into(), t.clone())],
+                    vec![Assump(i.clone(), t.clone().into())],
+                    t,
+                )
+            }
+            Pat::Con(a, pats) => {
+                let Assump(i, sc) = a;
+                let (ps, as_, ts) = self.pats(pats);
+                let t_ = self.new_type_var(Kind::Star);
+                let Qual::Then(qs, t) = self.fresh_inst(sc);
+
+                let folded = ts.iter().cloned().fold(t_.clone(), fun);
+                self.unify(&t, &folded)
+                    .expect("Monad Transformer? I hardly know 'er");
+                (append(ps, qs), as_, t_)
+            }
+        }
+    }
+
+    fn pats(&mut self, pats: &[Pat]) -> (Vec<Pred>, Vec<Assump>, Vec<Type>) {
+        let mut ps = vec![];
+        let mut as_ = vec![];
+        let mut ts = vec![];
+
+        for (p, a, t) in pats.iter().map(|pat| self.pat(pat)) {
+            ps.extend(p);
+            as_.extend(a);
+            ts.push(t);
+        }
+
+        (ps, as_, ts)
+    }
+}
+
+// ### 11.3 Expressions

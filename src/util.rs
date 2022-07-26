@@ -44,3 +44,8 @@ where
 
     buf
 }
+
+pub fn append<T>(mut left: Vec<T>, right: Vec<T>) -> Vec<T> {
+    left.extend(right);
+    left
+}
