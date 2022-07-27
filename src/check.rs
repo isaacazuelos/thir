@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::util::{append, intersection, lookup, union};
+use crate::util::{append, intersection, lookup, minus, partition, union};
 
 // For simplicity, we're not worrying too much about reducing shared references.
 
@@ -859,9 +859,9 @@ impl Types for Assump {
     }
 }
 
-fn find(i: Id, assumptions: &[Assump]) -> Result<Scheme> {
+fn find(i: &Id, assumptions: &[Assump]) -> Result<Scheme> {
     for Assump(i_, sc) in assumptions {
-        if i == *i_ {
+        if i == i_ {
             return Ok(sc.clone());
         }
     }
@@ -946,7 +946,13 @@ impl Instantiate for Pred {
 //
 // Here we go!
 
-// I will not be using this.
+// I will not be using this much, outside of as a reference against the text.
+//
+// I _suspect_ we can move these other args into our TI state, but we'd need to
+// confirm that changes to them don't 'backtrack' -- which might happen as you
+// traverse scopes. I'm pretty sure you can't have a scoped instance, so the
+// `ClassEnv` should be fine. I'm not sure I understand exactly how Assump is
+// used, especially around `TI::pat`, so I'll stick to args for now.
 type Infer<E, T> = fn(&mut TI, &ClassEnv, &[Assump], E) -> Result<(Vec<Pred>, T)>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -987,6 +993,7 @@ enum Pat {
 }
 
 impl TI {
+    // This might need to be changed to return a Result, it's weird it not.
     fn pat(&mut self, p: &Pat) -> (Vec<Pred>, Vec<Assump>, Type) {
         match p {
             Pat::Var(i) => {
@@ -1022,6 +1029,7 @@ impl TI {
 
                 let folded = ts.iter().cloned().fold(t_.clone(), fun);
                 self.unify(&t, &folded)
+                    // We almost certainly need Result here...
                     .expect("Monad Transformer? I hardly know 'er");
                 (append(ps, qs), as_, t_)
             }
@@ -1044,3 +1052,106 @@ impl TI {
 }
 
 // ### 11.3 Expressions
+
+#[derive(Debug, Clone)]
+enum Expr {
+    Var(Id),
+    Lit(Literal),
+    Const(Assump),
+    Ap(Box<Expr>, Box<Expr>),
+    Let(BindGroup, Box<Expr>),
+}
+
+impl TI {
+    fn expr(&mut self, ce: &ClassEnv, as_: &[Assump], e: &Expr) -> Result<(Vec<Pred>, Type)> {
+        match e {
+            Expr::Var(i) => {
+                let sc = find(i, as_)?;
+                let Qual::Then(ps, t) = self.fresh_inst(&sc);
+                Ok((ps, t))
+            }
+            Expr::Const(Assump(i, sc)) => {
+                let Qual::Then(ps, t) = self.fresh_inst(&sc);
+                Ok((ps, t))
+            }
+            Expr::Lit(l) => {
+                let (ps, t) = self.lit(&l);
+                Ok((ps, t))
+            }
+            Expr::Ap(e, f) => {
+                let (ps, te) = self.expr(ce, as_, e)?;
+                let (qs, tf) = self.expr(ce, as_, f)?;
+                let t = self.new_type_var(Kind::Star);
+                self.unify(&fun(tf, t), &te)?;
+                Ok((append(ps, qs), te))
+            }
+            Expr::Let(bg, e) => {
+                let (ps, as__) = self.bind_group(ce, as_, &bg)?;
+                let (qs, t) = self.expr(ce, &append(as__, as_.into()), e)?;
+                Ok((append(ps, qs), t))
+            }
+            _ => todo!(),
+        }
+    }
+}
+
+// ### 11.4 Alternatives
+
+type Alt = (Vec<Pat>, Expr);
+
+impl TI {
+    fn alt(&mut self, ce: &ClassEnv, as_: &[Assump], (pats, e): &Alt) -> Result<(Vec<Pred>, Type)> {
+        let (ps, as__, ts) = self.pats(&pats);
+        let (qs, t) = self.expr(ce, &append(as__, as_.into()), &e)?;
+
+        let folded = ts.iter().cloned().fold(t, fun);
+        Ok((append(ps, qs), folded))
+    }
+
+    // Now that's a signature!
+    fn alts(&mut self, ce: &ClassEnv, as_: &[Assump], alts: &[Alt], t: Type) -> Result<Vec<Pred>> {
+        let psts = alts
+            .iter()
+            .map(|a| self.alt(ce, as_, a))
+            .collect::<Result<Vec<_>>>()?;
+
+        for t2 in psts.iter().map(|t| &t.1) {
+            self.unify(&t, t2)?
+        }
+
+        Ok(psts.into_iter().flat_map(|(p, _)| p).collect())
+    }
+}
+
+// ### 11.5
+
+fn split(ce: &ClassEnv, fs: &[Tyvar], gs: &[Tyvar], ps: &[Pred]) -> Result<(Vec<Pred>, Vec<Pred>)> {
+    let ps_ = ce.reduce(ps)?;
+    let (ds, rs) = partition(|p| p.tv().iter().all(|t| fs.contains(t)), ps_);
+    let rs_ = ce.defaulted_preds(append(fs.to_vec(), gs.to_vec()), &rs)?;
+    Ok((ds, minus(rs, &rs_)))
+}
+
+// #### 11.5.1
+
+// Later
+
+#[derive(Debug, Clone)]
+struct BindGroup;
+
+impl ClassEnv {
+    fn defaulted_preds(&self, to_vec: Vec<Tyvar>, rs: &[Pred]) -> Result<Vec<Pred>> {
+        todo!()
+    }
+}
+
+impl TI {
+    fn bind_group(
+        &self,
+        ce: &ClassEnv,
+        as_: &[Assump],
+        bg: &BindGroup,
+    ) -> Result<(Vec<Pred>, Vec<Assump>)> {
+        todo!()
+    }
+}

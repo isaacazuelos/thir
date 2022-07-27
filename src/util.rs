@@ -49,3 +49,31 @@ pub fn append<T>(mut left: Vec<T>, right: Vec<T>) -> Vec<T> {
     left.extend(right);
     left
 }
+
+pub fn minus<T>(elements: Vec<T>, to_remove: &[T]) -> Vec<T>
+where
+    T: PartialEq,
+{
+    elements
+        .into_iter()
+        .filter(|element| !to_remove.contains(element))
+        .collect()
+}
+
+pub fn partition<T, F>(predicate: F, elements: Vec<T>) -> (Vec<T>, Vec<T>)
+where
+    F: Fn(T) -> bool,
+{
+    let ts = vec![];
+    let fs = vec![];
+
+    for element in elements {
+        if predicate(element) {
+            ts.push(element);
+        } else {
+            fs.push(element);
+        }
+    }
+
+    (ts, fs)
+}
