@@ -1134,16 +1134,116 @@ fn split(ce: &ClassEnv, fs: &[Tyvar], gs: &[Tyvar], ps: &[Pred]) -> Result<(Vec<
 
 // #### 11.5.1
 
+type Ambiguity = (Tyvar, Vec<Pred>);
+
+const NUM_CLASSES: &[&'static str] = &[
+    "Num",
+    "Integral",
+    "Floating",
+    "Fractional",
+    "Real",
+    "RealFloat",
+    "RealFrac",
+];
+
+fn num_classes() -> Vec<Id> {
+    NUM_CLASSES.iter().map(|s| (*s).into()).collect()
+}
+
+const STD_CLASSES: &[&'static str] = &[
+    "Eq",
+    "Ord",
+    "Show",
+    "Read",
+    "Bounded",
+    "Enum",
+    "Ix",
+    "Functor",
+    "Monad",
+    "MonadPlus",
+];
+
+fn std_classes() -> Vec<Id> {
+    [STD_CLASSES, NUM_CLASSES]
+        .iter()
+        .map(|i| i.iter())
+        .flatten()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+impl ClassEnv {
+    fn candidates(&self, (v, qs): &Ambiguity) -> Vec<Type> {
+        let mut is = vec![];
+        let mut ts = vec![];
+        for Pred::IsIn(i, t) in qs.iter() {
+            is.push(i);
+            ts.push(t);
+        }
+
+        if !ts.iter().all(|t| t == &&Type::Var(v.clone())) {
+            return vec![];
+        }
+
+        if !is.iter().any(|i| num_classes().contains(i)) {
+            return vec![];
+        }
+
+        if !is.iter().all(|i| std_classes().contains(i)) {
+            return vec![];
+        }
+
+        let mut t_s = vec![];
+
+        for t_ in &self.defaults {
+            if !is
+                .iter()
+                .map(|i| Pred::IsIn(i.to_string(), t_.clone()))
+                .all(|q| self.entail(&[], &q))
+            {
+                return vec![];
+            } else {
+                t_s.push(t_.clone());
+            }
+        }
+
+        // there's no way I got this right
+
+        t_s
+    }
+
+    fn with_defaults<F, T>(&self, f: F, vs: &[Tyvar], ps: &[Pred]) -> Result<T>
+    where
+        F: Fn(&[Ambiguity], &[Type]) -> T,
+    {
+        todo!()
+    }
+}
+
+impl ClassEnv {
+    fn defaulted_preds(&self, vs: Vec<Tyvar>, ps: &[Pred]) -> Result<Vec<Pred>> {
+        self.with_defaults(|vps, ts| vps.iter().flat_map(|a| a.1).collect(), &vs, &ps)
+    }
+
+    fn default_subst(&self, vs: Vec<Tyvar>, ps: &[Pred]) -> Result<Subst> {
+        self.with_defaults(
+            |vps, ts| {
+                vps.iter()
+                    .map(|(fst, _)| fst.clone())
+                    .zip(ts.iter().cloned())
+                    .collect()
+            },
+            &vs,
+            &ps,
+        )
+    }
+}
+// ### 11.6 Bind Groups
+
 // Later
 
 #[derive(Debug, Clone)]
 struct BindGroup;
-
-impl ClassEnv {
-    fn defaulted_preds(&self, to_vec: Vec<Tyvar>, rs: &[Pred]) -> Result<Vec<Pred>> {
-        todo!()
-    }
-}
 
 impl TI {
     fn bind_group(
