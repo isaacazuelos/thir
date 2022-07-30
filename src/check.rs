@@ -5,6 +5,7 @@
 //! here is to get the algorithm in the paper working. I can worry about making
 //! it idiomatic later.
 
+// There are a lot.
 #![allow(unused_variables)]
 
 // ## Preliminaries
@@ -15,7 +16,7 @@ use crate::util::{append, intersection, lookup, minus, partition, union, zip_wit
 
 // For simplicity, we're not worrying too much about reducing shared references.
 
-type Error = &'static str;
+type Error = String;
 
 // kind of ties our hands at defining new ones, but it's nicer to avoid all the
 // `.into` calls for now.
@@ -229,7 +230,7 @@ impl Types for Type {
         match self {
             Type::Var(u) => vec![u.clone()],
             Type::Ap(l, r) => union(&l.tv(), &r.tv()),
-            Type::Con(_) | Type::Gen(_) => unimplemented!(),
+            Type::Con(_) | Type::Gen(_) => vec![],
         }
     }
 }
@@ -287,7 +288,7 @@ fn merge(s1: &Subst, s2: &Subst) -> Result<Subst> {
 
     for v in intersection(&s1_vars, &s2_vars) {
         if Type::Var(v.clone()).apply(s1) != Type::Var(v).apply(s2) {
-            return Err("merge fails");
+            return Err("merge fails".into());
         }
     }
 
@@ -312,7 +313,7 @@ fn mgu(t1: &Type, t2: &Type) -> Result<Subst> {
         }
         (Type::Var(u), t) | (t, Type::Var(u)) => var_bind(u, t),
         (Type::Con(t1), Type::Con(t2)) if t1 == t2 => Ok(null_subst()),
-        _ => Err("types do not unify"),
+        _ => Err(format!("types do not unify: {:?}, {:?}", t1, t2)),
     }
 }
 
@@ -320,9 +321,9 @@ fn var_bind(u: &Tyvar, t: &Type) -> Result<Subst> {
     if matches!(t, Type::Var(t_) if t_ == u) {
         Ok(null_subst())
     } else if t.tv().contains(u) {
-        Err("occurs check fails")
+        Err("occurs check fails".into())
     } else if u.kind() != t.kind() {
-        Err("kinds do not match")
+        Err("kinds do not match".into())
     } else {
         Ok(maps_to(u, t))
     }
@@ -337,7 +338,7 @@ fn match_(t1: &Type, t2: &Type) -> Result<Subst> {
         }
         (Type::Var(u), t) if u.kind() == t.kind() => Ok(maps_to(u, t)),
         (Type::Con(tc1), Type::Con(tc2)) if tc1 == tc2 => Ok(null_subst()),
-        (t1, t2) => Err("types do not match"),
+        (t1, t2) => Err(format!("types do not match: {:?}, {:?}", t1, t2)),
     }
 }
 
@@ -426,7 +427,7 @@ where
     if i == i_ {
         m(t, t_)
     } else {
-        Err("classes differ")
+        Err("classes differ".into())
     }
 }
 
@@ -507,7 +508,7 @@ fn ord_example() -> Class {
 
 type EnvTransformer = fn(&ClassEnv) -> Result<ClassEnv>;
 
-#[derive(Clone)]
+#[derive(Clone, Default, Debug)]
 struct ClassEnv {
     classes: HashMap<Id, Class>,
     defaults: Vec<Type>,
@@ -530,7 +531,7 @@ impl ClassEnv {
     fn insts(&self, id: &Id) -> &[Inst] {
         &self
             .classes(id)
-            .expect("super is partial in the paper")
+            .expect("insts is partial in the paper")
             .instances
     }
 
@@ -612,7 +613,9 @@ impl ClassEnv {
         self.add_class_mut("Bounded", &[])?;
         self.add_class_mut("Enum", &[])?;
         self.add_class_mut("Functor", &[])?;
-        self.add_class_mut("Monad", &[])
+        self.add_class_mut("Monad", &[])?;
+
+        Ok(())
     }
 
     fn add_num_classes_mut(&mut self) -> Result<()> {
@@ -622,30 +625,36 @@ impl ClassEnv {
         self.add_class_mut("Integral", &["Real", "Enum"])?;
         self.add_class_mut("RealFrac", &["Real", "Fractional"])?;
         self.add_class_mut("Floating", &["Fractional"])?;
-        self.add_class_mut("RealFloat", &["ReadFrac, Floating"])
+        self.add_class_mut("RealFloat", &["RealFrac", "Floating"])?;
+
+        Ok(())
     }
 
     fn add_class_mut(&mut self, id: impl Into<Id>, supers: &[&str]) -> Result<()> {
         let id = id.into();
         let supers: Vec<Id> = supers.iter().map(|s| String::from(*s)).collect();
+
         if let Some(class) = self.classes(&id) {
-            Err("class already defined")
-        } else if supers.iter().any(|super_| self.classes(super_).is_none()) {
-            Err("superclass not defined")
-        } else {
-            let supers: Vec<_> = supers.iter().map(|s| s.into()).collect();
-            let class = Class::new(&supers, &[]);
-            self.classes.insert(id, class);
-            Ok(())
+            return Err(format!("class already defined: {id}"));
         }
+
+        for superclass in &supers {
+            if !self.classes.contains_key(superclass) {
+                return Err(format!("superclass {superclass} not defined for {id}"));
+            }
+        }
+
+        let class = Class::new(&supers, &[]);
+        self.classes.insert(id, class);
+        Ok(())
     }
 
     fn add_inst_mut(&mut self, ps: &[Pred], p: &Pred) -> Result<()> {
         let Pred::IsIn(id, _) = p;
 
         // we could skip this check if `insts` return a result
-        if self.classes(id).is_none() {
-            return Err("no class instance");
+        if !defined(self.classes(id)) {
+            return Err(format!("no class instance for {id}"));
         }
 
         if self
@@ -654,19 +663,15 @@ impl ClassEnv {
             .map(Qual::consequence)
             .any(|q| overlap(p, q))
         {
-            return Err("overlapping instance");
+            return Err(format!("overlapping instances"));
         }
 
         // There's some important other stuff to check listed at the bottom of
         // page 16, but the paper doesn't do it so I won't here.
 
-        // We mutate the existing class definition to add our new instance.
-        //
-        // This adds it to the end instead of head, but since overlapping
-        // instances aren't legal, we know it's unique so it doesn't matter.
         self.classes
             .get_mut(id)
-            .expect("checked above")
+            .unwrap()
             .instances
             .push(Qual::then(ps, p.clone()));
 
@@ -678,8 +683,7 @@ fn overlap(p: &Pred, q: &Pred) -> bool {
     mgu_pred(p, q).is_ok()
 }
 
-// Not sure I agree with footnote about `isJust` here. I didn't use it in favour
-// of `is_none` over `not . defined`.
+// Not sure I agree with footnote about `isJust` here.
 fn defined<T>(option: Option<T>) -> bool {
     option.is_some()
 }
@@ -765,7 +769,7 @@ impl ClassEnv {
             Ok(vec![p.clone()])
         } else {
             match self.by_inst(p) {
-                Err(_) => Err("context reduction"),
+                Err(_) => Err("context reduction".into()),
                 Ok(ps) => self.to_hnfs(&ps),
             }
         }
@@ -808,8 +812,6 @@ enum Scheme {
     ForAll(Vec<Kind>, Qual<Type>),
 }
 
-// Okay, I actually need to stop, it's getting late.
-
 impl Types for Scheme {
     fn apply(&self, s: &Subst) -> Self {
         let Scheme::ForAll(ks, qt) = self.clone();
@@ -844,7 +846,7 @@ impl From<Type> for Scheme {
 
 // I'm not going to try and come up with a name for `:>:`
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Assump(Id, Scheme);
 
 impl Types for Assump {
@@ -865,13 +867,14 @@ fn find(i: &Id, assumptions: &[Assump]) -> Result<Scheme> {
             return Ok(sc.clone());
         }
     }
-    Err("unbound identifier")
+    Err(format!("unbound identifier: {i}"))
 }
 
 // ## 10. A Type Inference Monad
 //
 // Well, not really.
 
+#[derive(Debug, Default)]
 struct TI {
     substitutions: Subst,
     next_var: usize,
@@ -924,21 +927,26 @@ impl Instantiate for Type {
     }
 }
 
-impl Instantiate for Vec<Type> {
-    fn inst(&self, ts: &[Type]) -> Vec<Type> {
-        self.iter().map(|t| t.inst(ts)).collect()
+impl<A> Instantiate for Vec<A>
+where
+    A: Instantiate,
+{
+    fn inst(&self, ts: &[Type]) -> Vec<A> {
+        self.iter().map(|a| a.inst(ts)).collect()
     }
 }
 
 impl<T: Instantiate> Instantiate for Qual<T> {
     fn inst(&self, ts: &[Type]) -> Qual<T> {
-        todo!()
+        let Qual::Then(ps, t) = self;
+        Qual::Then(ps.inst(ts), t.inst(ts))
     }
 }
 
 impl Instantiate for Pred {
     fn inst(&self, ts: &[Type]) -> Pred {
-        todo!()
+        let Pred::IsIn(c, t) = self;
+        Pred::IsIn(c.clone(), t.inst(ts))
     }
 }
 
@@ -1096,6 +1104,14 @@ impl TI {
 
 // ### 11.4 Alternatives
 
+// An alternative is what this is calling an 'equation'
+//
+// i.e. it's each line that's pattern matched in code like this:
+//
+//     null []    = true
+//     null (_:_) = false
+//
+// The Vec is each parameter, and the Expr is the right hand side.
 type Alt = (Vec<Pat>, Expr);
 
 impl TI {
@@ -1107,7 +1123,6 @@ impl TI {
         Ok((append(ps, qs), folded))
     }
 
-    // Now that's a signature!
     fn alts(&mut self, ce: &ClassEnv, as_: &[Assump], alts: &[Alt], t: Type) -> Result<Vec<Pred>> {
         let psts = alts
             .iter()
@@ -1171,6 +1186,27 @@ fn std_classes() -> Vec<Id> {
 }
 
 impl ClassEnv {
+    fn ambiguities(&self, vs: &[Tyvar], ps: &[Pred]) -> Vec<Ambiguity> {
+        let mut buf = vec![];
+
+        for v in minus(ps.to_vec().tv(), vs).iter() {
+            let ps = ps
+                .iter()
+                .filter_map(|p| {
+                    if p.tv().contains(v) {
+                        Some(p.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            buf.push((v.clone(), ps));
+        }
+
+        buf
+    }
+
     fn candidates(&self, (v, qs): &Ambiguity) -> Vec<Type> {
         let mut is = vec![];
         let mut ts = vec![];
@@ -1214,7 +1250,16 @@ impl ClassEnv {
     where
         F: Fn(&[Ambiguity], &[Type]) -> T,
     {
-        todo!()
+        let vps = self.ambiguities(vs, ps);
+        let tss: Vec<Vec<_>> = vps.iter().map(|vp| self.candidates(vp)).collect();
+
+        if tss.iter().any(|ts| ts.is_empty()) {
+            Err("cannot resolve ambiguity".into())
+        } else {
+            let ts: Vec<Type> = tss.iter().map(|ts| ts.first().unwrap().clone()).collect();
+
+            Ok(f(&vps, &ts))
+        }
     }
 }
 
@@ -1265,9 +1310,9 @@ impl TI {
         let (ds, rs) = split(ce, &fs, &gs, &ps_)?;
 
         if sc != &sc_ {
-            Err("signature to general")
+            Err("signature to general".into())
         } else if !rs.is_empty() {
-            Err("context too weak")
+            Err("context too weak".into())
         } else {
             Ok(ds)
         }
@@ -1401,5 +1446,107 @@ impl TI {
         let s_ = ce.default_subst(vec![], &rs)?;
 
         Ok(as__.apply(&at_at(&s_, s)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_empty() {
+        // the empty program
+        let program = vec![];
+        let mut ti = TI::default();
+        let ce = ClassEnv::default();
+        let assumptions = ti.program(&ce, &[], program).expect("is well typed");
+        assert!(assumptions.is_empty());
+    }
+
+    #[test]
+    fn test_simple() {
+        // the program `x = 'c'`
+        let program: Program = vec![(
+            // binding groups
+            vec![], // explicit type signatures
+            vec![vec![(
+                // implicit types
+                "x".into(), // id of thing being bound
+                vec![(
+                    vec![],                        // patterns to the left of the `=`
+                    Expr::Lit(Literal::Char('a')), // expression on the right of the `=`
+                )],
+            )]],
+        )];
+
+        let mut ti = TI::default();
+        let ce = ClassEnv::default();
+        let assumptions = ti.program(&ce, &[], program).expect("is well typed");
+        assert_eq!(assumptions.len(), 1);
+        // i.e. x :: [Char]
+        assert_eq!(
+            format!("{:?}", assumptions),
+            r#"[Assump("x", ForAll([], Then([], Con(Tycon("Char", Star)))))]"#
+        )
+    }
+
+    #[test]
+    fn test_hello() {
+        // the program `x = "Hello world!"`
+        let program: Program = vec![(
+            // binding groups
+            vec![], // explicit type signatures
+            vec![vec![(
+                // implicit types
+                "x".into(), // id of thing being bound
+                vec![(
+                    vec![],                                          // patterns to the left of the `=`
+                    Expr::Lit(Literal::Str("Hello, world!".into())), // expression on the right of the `=`
+                )],
+            )]],
+        )];
+
+        let mut ti = TI::default();
+        let ce = ClassEnv::default();
+        let assumptions = ti.program(&ce, &[], program).expect("is well typed");
+        assert_eq!(assumptions.len(), 1);
+        // i.e. x :: [Char]
+        assert_eq!(
+            format!("{:?}", assumptions),
+            r#"[Assump("x", ForAll([], Then([], Ap(Con(Tycon("[]", Fun(Star, Star))), Con(Tycon("Char", Star))))))]"#
+        )
+    }
+
+    #[test]
+    fn test_defaults() {
+        // the program `x = 1`
+        let program: Program = vec![(
+            // binding groups
+            vec![], // explicit type signatures
+            vec![vec![(
+                // implicit types
+                "x".into(), // id of thing being bound
+                vec![(
+                    vec![],                     // patterns to the left of the `=`
+                    Expr::Lit(Literal::Int(1)), // expression on the right of the `=`
+                )],
+            )]],
+        )];
+
+        let mut ti = TI::default();
+
+        let ce = ClassEnv::default()
+            .example_insts()
+            .expect("example instances should work");
+
+        let assumptions = ti.program(&ce, &[], program).expect("is well typed");
+        assert_eq!(assumptions.len(), 1);
+        // i.e. x :: [Char]
+        assert_eq!(
+            format!("{:?}", assumptions),
+            // How do we know what Gen(0) is limited to?
+            r#"[Assump(\"x\", ForAll([Star], Then(["Integral"], Gen(0))))]"#
+        )
     }
 }
