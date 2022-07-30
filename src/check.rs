@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::util::{append, intersection, lookup, minus, partition, union};
+use crate::util::{append, intersection, lookup, minus, partition, union, zip_with, zip_with_try};
 
 // For simplicity, we're not worrying too much about reducing shared references.
 
@@ -953,7 +953,7 @@ impl Instantiate for Pred {
 // traverse scopes. I'm pretty sure you can't have a scoped instance, so the
 // `ClassEnv` should be fine. I'm not sure I understand exactly how Assump is
 // used, especially around `TI::pat`, so I'll stick to args for now.
-type Infer<E, T> = fn(&mut TI, &ClassEnv, &[Assump], E) -> Result<(Vec<Pred>, T)>;
+type Infer<E, T> = dyn Fn(&mut TI, &ClassEnv, &[Assump], E) -> Result<(Vec<Pred>, T)>;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Literal {
@@ -1071,11 +1071,11 @@ impl TI {
                 Ok((ps, t))
             }
             Expr::Const(Assump(i, sc)) => {
-                let Qual::Then(ps, t) = self.fresh_inst(&sc);
+                let Qual::Then(ps, t) = self.fresh_inst(sc);
                 Ok((ps, t))
             }
             Expr::Lit(l) => {
-                let (ps, t) = self.lit(&l);
+                let (ps, t) = self.lit(l);
                 Ok((ps, t))
             }
             Expr::Ap(e, f) => {
@@ -1086,11 +1086,10 @@ impl TI {
                 Ok((append(ps, qs), te))
             }
             Expr::Let(bg, e) => {
-                let (ps, as__) = self.bind_group(ce, as_, &bg)?;
+                let (ps, as__) = self.bind_group(ce, as_, bg)?;
                 let (qs, t) = self.expr(ce, &append(as__, as_.into()), e)?;
                 Ok((append(ps, qs), t))
             }
-            _ => todo!(),
         }
     }
 }
@@ -1101,8 +1100,8 @@ type Alt = (Vec<Pat>, Expr);
 
 impl TI {
     fn alt(&mut self, ce: &ClassEnv, as_: &[Assump], (pats, e): &Alt) -> Result<(Vec<Pred>, Type)> {
-        let (ps, as__, ts) = self.pats(&pats);
-        let (qs, t) = self.expr(ce, &append(as__, as_.into()), &e)?;
+        let (ps, as__, ts) = self.pats(pats);
+        let (qs, t) = self.expr(ce, &append(as__, as_.into()), e)?;
 
         let folded = ts.iter().cloned().fold(t, fun);
         Ok((append(ps, qs), folded))
@@ -1136,7 +1135,7 @@ fn split(ce: &ClassEnv, fs: &[Tyvar], gs: &[Tyvar], ps: &[Pred]) -> Result<(Vec<
 
 type Ambiguity = (Tyvar, Vec<Pred>);
 
-const NUM_CLASSES: &[&'static str] = &[
+const NUM_CLASSES: &[&str] = &[
     "Num",
     "Integral",
     "Floating",
@@ -1150,7 +1149,7 @@ fn num_classes() -> Vec<Id> {
     NUM_CLASSES.iter().map(|s| (*s).into()).collect()
 }
 
-const STD_CLASSES: &[&'static str] = &[
+const STD_CLASSES: &[&str] = &[
     "Eq",
     "Ord",
     "Show",
@@ -1166,8 +1165,7 @@ const STD_CLASSES: &[&'static str] = &[
 fn std_classes() -> Vec<Id> {
     [STD_CLASSES, NUM_CLASSES]
         .iter()
-        .map(|i| i.iter())
-        .flatten()
+        .flat_map(|i| i.iter())
         .map(|s| s.to_string())
         .collect()
 }
@@ -1222,7 +1220,11 @@ impl ClassEnv {
 
 impl ClassEnv {
     fn defaulted_preds(&self, vs: Vec<Tyvar>, ps: &[Pred]) -> Result<Vec<Pred>> {
-        self.with_defaults(|vps, ts| vps.iter().flat_map(|a| a.1).collect(), &vs, &ps)
+        self.with_defaults(
+            |vps, ts| vps.iter().flat_map(|a| a.1.clone()).collect(),
+            &vs,
+            ps,
+        )
     }
 
     fn default_subst(&self, vs: Vec<Tyvar>, ps: &[Pred]) -> Result<Subst> {
@@ -1234,24 +1236,170 @@ impl ClassEnv {
                     .collect()
             },
             &vs,
-            &ps,
+            ps,
         )
     }
 }
 // ### 11.6 Bind Groups
 
-// Later
+type Expl = (Id, Scheme, Vec<Alt>);
 
-#[derive(Debug, Clone)]
-struct BindGroup;
+impl TI {
+    fn expl(&mut self, ce: &ClassEnv, as_: &[Assump], (i, sc, alts): &Expl) -> Result<Vec<Pred>> {
+        let Qual::Then(qs, t) = self.fresh_inst(sc);
+        let ps = self.alts(ce, as_, alts, t.clone())?;
+        let s = self.get_subst();
+
+        let qs_ = qs.apply(s);
+        let t_ = t.apply(s);
+        let fs = as_.to_vec().apply(s).tv();
+        let gs = minus(t_.tv(), &fs);
+        let sc_ = quantify(&gs, Qual::Then(qs_.clone(), t_));
+        let ps_ = ps
+            .apply(s)
+            .iter()
+            .filter(|p| !ce.entail(&qs_, p))
+            .cloned()
+            .collect::<Vec<Pred>>();
+
+        let (ds, rs) = split(ce, &fs, &gs, &ps_)?;
+
+        if sc != &sc_ {
+            Err("signature to general")
+        } else if !rs.is_empty() {
+            Err("context too weak")
+        } else {
+            Ok(ds)
+        }
+    }
+}
+
+type Impl = (Id, Vec<Alt>);
+
+fn restricted(bs: &[Impl]) -> bool {
+    bs.iter()
+        .any(|(i, alts)| alts.iter().any(|alt| alt.0.is_empty()))
+}
+
+impl TI {
+    fn impls(
+        &mut self,
+        ce: &ClassEnv,
+        as_: &[Assump],
+        bs: &[Impl],
+    ) -> Result<(Vec<Pred>, Vec<Assump>)> {
+        let ts = bs
+            .iter()
+            .map(|_| self.new_type_var(Kind::Star))
+            .collect::<Vec<_>>();
+
+        let is: Vec<Id> = bs.iter().map(|b| b.0.clone()).collect();
+        let scs: Vec<Scheme> = ts.iter().cloned().map(Scheme::from).collect();
+        let as__ = append(zip_with(Assump, is.clone(), scs), as_.to_vec());
+        let altss = bs.iter().map(|b| b.1.clone()).collect();
+
+        let pss = zip_with_try(|alts, t| self.alts(ce, as_, &alts, t), altss, ts.clone())?;
+        let s = self.get_subst();
+
+        let ps_: Vec<Pred> = pss.iter().flatten().map(|p| p.apply(s)).collect();
+        let ts_: Vec<Type> = ts.apply(s);
+        let fs: Vec<Tyvar> = as_.to_vec().apply(s).tv();
+        let vss: Vec<Vec<Tyvar>> = ts_.iter().map(Types::tv).collect();
+        let gs = minus(
+            vss.iter()
+                .cloned()
+                .reduce(|l, r| intersection(&l, &r))
+                .unwrap(),
+            &fs,
+        );
+
+        let (ds, rs) = split(
+            ce,
+            &fs,
+            &vss.into_iter().reduce(|a, b| intersection(&a, &b)).unwrap(),
+            &ps_,
+        )?;
+
+        if restricted(bs) {
+            let gs_ = minus(gs, &rs.tv());
+            let scs_ = ts_
+                .iter()
+                .map(|t| quantify(&gs_, Qual::Then(rs.clone(), t.clone())))
+                .collect();
+            Ok((append(ds, rs), zip_with(Assump, is, scs_)))
+        } else {
+            let scs_ = ts_
+                .iter()
+                .map(|t| quantify(&gs, Qual::Then(rs.clone(), t.clone())))
+                .collect();
+            Ok((ds, zip_with(Assump, is, scs_)))
+        }
+    }
+}
+
+type BindGroup = (Vec<Expl>, Vec<Vec<Impl>>);
+type Program = Vec<BindGroup>;
 
 impl TI {
     fn bind_group(
-        &self,
+        &mut self,
         ce: &ClassEnv,
         as_: &[Assump],
-        bg: &BindGroup,
+        (es, iss): &BindGroup,
     ) -> Result<(Vec<Pred>, Vec<Assump>)> {
-        todo!()
+        let as__: Vec<Assump> = es
+            .iter()
+            .map(|(v, sc, alts)| Assump(v.clone(), sc.clone()))
+            .collect();
+
+        let (ps, all_as): (Vec<Pred>, Vec<Assump>) = {
+            // inlining tiSeq in the paper because its' easier.
+            let mut ps = vec![];
+            let mut all_as = vec![];
+
+            for is in iss {
+                let (p, a) = self.impls(ce, &all_as, is)?;
+                ps.extend(p);
+                all_as.extend(a);
+            }
+
+            (ps, all_as)
+        };
+
+        let qss = {
+            // had to work with the Results in iterators.
+            let mut buf = vec![];
+
+            for e in es {
+                let x = self.expl(ce, &all_as, e)?;
+                buf.extend(x);
+            }
+
+            buf
+        };
+
+        Ok((append(ps, qss), all_as))
+    }
+
+    fn program(&mut self, ce: &ClassEnv, as_: &[Assump], bgs: Program) -> Result<Vec<Assump>> {
+        let (ps, as__) = {
+            let mut ps = vec![];
+            let mut all_as = vec![];
+
+            for bg in bgs {
+                let (p, a) = self.bind_group(ce, as_, &bg)?;
+                all_as.extend(a);
+                ps.extend(p);
+            }
+
+            (ps, all_as)
+        };
+
+        let s = self.get_subst();
+
+        let rs = ce.reduce(&ps.apply(s))?;
+        let s_ = ce.default_subst(vec![], &rs)?;
+
+        Ok(as__.apply(&at_at(&s_, s)))
     }
 }

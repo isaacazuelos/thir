@@ -62,13 +62,13 @@ where
 
 pub fn partition<T, F>(predicate: F, elements: Vec<T>) -> (Vec<T>, Vec<T>)
 where
-    F: Fn(T) -> bool,
+    F: Fn(&T) -> bool,
 {
-    let ts = vec![];
-    let fs = vec![];
+    let mut ts = vec![];
+    let mut fs = vec![];
 
     for element in elements {
-        if predicate(element) {
+        if predicate(&element) {
             ts.push(element);
         } else {
             fs.push(element);
@@ -76,4 +76,30 @@ where
     }
 
     (ts, fs)
+}
+
+pub fn zip_with<F, A, B, R>(f: F, lhs: Vec<A>, rhs: Vec<B>) -> Vec<R>
+where
+    F: Fn(A, B) -> R,
+{
+    let mut buf = Vec::new();
+
+    for (a, b) in lhs.into_iter().zip(rhs.into_iter()) {
+        buf.push(f(a, b));
+    }
+
+    buf
+}
+
+pub fn zip_with_try<F, A, B, E, R>(mut f: F, lhs: Vec<A>, rhs: Vec<B>) -> Result<Vec<R>, E>
+where
+    F: FnMut(A, B) -> Result<R, E>,
+{
+    let mut buf = Vec::new();
+
+    for (a, b) in lhs.into_iter().zip(rhs.into_iter()) {
+        buf.push(f(a, b)?)
+    }
+
+    Ok(buf)
 }
