@@ -558,12 +558,12 @@ struct TypeClassEnvironment {
 }
 
 impl TypeClassEnvironment {
-    // so we can call the hashmap the way you'd expect if we used a function
-    // like the paper.
+    /// Get a type class by [`Id`].
     fn get(&self, id: &Id) -> Option<&TypeClass> {
         self.classes.get(id)
     }
 
+    /// Get all the super classes of a type class by [`Id`].
     fn super_classes_of(&self, id: &Id) -> &[Id] {
         &self
             .get(id)
@@ -571,6 +571,7 @@ impl TypeClassEnvironment {
             .super_classes
     }
 
+    /// Get the [`Instance`]s of a type class by [`Id`].
     fn instances_of(&self, id: &Id) -> &[Instance] {
         &self
             .get(id)
@@ -578,98 +579,7 @@ impl TypeClassEnvironment {
             .instances
     }
 
-    fn modify(&self, i: Id, c: TypeClass) -> TypeClassEnvironment {
-        let mut new = self.clone();
-        new.classes.insert(i, c);
-        new
-    }
-
-    // This is our name for `<:>` since I have no idea what to call that.
-    //
-    // Here it's fully applied, so we'll probably need to be careful translating
-    // code that uses this.
-
-    fn compose(
-        &self,
-        f: EnvironmentTransformer,
-        g: EnvironmentTransformer,
-    ) -> Result<TypeClassEnvironment> {
-        g(&f(self)?)
-    }
-
-    fn add_type_class(&self, i: Id, is: &[Id]) -> Result<TypeClassEnvironment> {
-        let mut new = self.clone();
-
-        new.add_type_class_mut(i, &is)?;
-        Ok(new)
-    }
-
-    fn add_instance(&self, ps: &[Predicate], p: &Predicate) -> Result<TypeClassEnvironment> {
-        let mut new = self.clone();
-        new.add_instance_mut(ps, p)?;
-        Ok(new)
-    }
-
-    fn add_prelude_classes(&self) -> Result<TypeClassEnvironment> {
-        let mut new = self.clone();
-
-        new.add_core_type_classes_mut()?;
-        new.add_num_type_classes_mut()?;
-
-        Ok(new)
-    }
-
-    fn example_instances(&self) -> Result<TypeClassEnvironment> {
-        let mut new = self.add_prelude_classes()?;
-
-        new.add_instance_mut(&[], &Predicate::is_in("Ord", prim::unit()))?;
-        new.add_instance_mut(&[], &Predicate::is_in("Ord", prim::character()))?;
-        new.add_instance_mut(&[], &Predicate::is_in("Ord", prim::int()))?;
-        new.add_instance_mut(
-            &[
-                Predicate::is_in("Ord", Type::Variable(TypeVariable::new("a", Kind::Star))),
-                Predicate::is_in("Ord", Type::Variable(TypeVariable::new("b", Kind::Star))),
-            ],
-            &Predicate::IsIn(
-                "Ord".into(),
-                prim::make_pair(
-                    Type::Variable(TypeVariable::new("a", Kind::Star)),
-                    Type::Variable(TypeVariable::new("b", Kind::Star)),
-                ),
-            ),
-        )?;
-
-        Ok(new)
-    }
-
-    // Cheating, don't tell Mr. Haskell!
-
-    fn add_core_type_classes_mut(&mut self) -> Result<()> {
-        self.add_type_class_mut("Eq", &[])?;
-        self.add_type_class_mut("Ord", &["Eq".into()])?;
-        self.add_type_class_mut("Show", &[])?;
-        self.add_type_class_mut("Read", &[])?;
-        self.add_type_class_mut("Bounded", &[])?;
-        self.add_type_class_mut("Enum", &[])?;
-        self.add_type_class_mut("Functor", &[])?;
-        self.add_type_class_mut("Monad", &[])?;
-
-        Ok(())
-    }
-
-    fn add_num_type_classes_mut(&mut self) -> Result<()> {
-        self.add_type_class_mut("Num", &["Eq".into(), "Show".into()])?;
-        self.add_type_class_mut("Real", &["Num".into(), "Ord".into()])?;
-        self.add_type_class_mut("Fractional", &["Num".into()])?;
-        self.add_type_class_mut("Integral", &["Real".into(), "Enum".into()])?;
-        self.add_type_class_mut("RealFrac", &["Real".into(), "Fractional".into()])?;
-        self.add_type_class_mut("Floating", &["Fractional".into()])?;
-        self.add_type_class_mut("RealFloat", &["RealFrac".into(), "Floating".into()])?;
-
-        Ok(())
-    }
-
-    fn add_type_class_mut(&mut self, id: impl Into<Id>, supers: &[Id]) -> Result<()> {
+    fn add_type_class(&mut self, id: impl Into<Id>, supers: &[Id]) -> Result<()> {
         let id = id.into();
 
         if let Some(class) = self.get(&id) {
@@ -714,6 +624,70 @@ impl TypeClassEnvironment {
             .push(Qualified::then(ps, p.clone()));
 
         Ok(())
+    }
+}
+
+// These methods are used to create a loaded environment, which we can use for testing.
+impl TypeClassEnvironment {
+    fn example_instances() -> TypeClassEnvironment {
+        let mut new = TypeClassEnvironment::default();
+
+        new.add_prelude_classes();
+
+        new.add_instance_mut(&[], &Predicate::is_in("Ord", prim::unit()))
+            .unwrap();
+        new.add_instance_mut(&[], &Predicate::is_in("Ord", prim::character()))
+            .unwrap();
+        new.add_instance_mut(&[], &Predicate::is_in("Ord", prim::int()))
+            .unwrap();
+        new.add_instance_mut(
+            &[
+                Predicate::is_in("Ord", Type::Variable(TypeVariable::new("a", Kind::Star))),
+                Predicate::is_in("Ord", Type::Variable(TypeVariable::new("b", Kind::Star))),
+            ],
+            &Predicate::IsIn(
+                "Ord".into(),
+                prim::make_pair(
+                    Type::Variable(TypeVariable::new("a", Kind::Star)),
+                    Type::Variable(TypeVariable::new("b", Kind::Star)),
+                ),
+            ),
+        )
+        .unwrap();
+
+        new
+    }
+
+    fn add_prelude_classes(&mut self) {
+        self.add_core_type_classes();
+        self.add_num_type_classes();
+    }
+
+    fn add_core_type_classes(&mut self) {
+        self.add_type_class("Eq", &[]).unwrap();
+        self.add_type_class("Ord", &["Eq".into()]).unwrap();
+        self.add_type_class("Show", &[]).unwrap();
+        self.add_type_class("Read", &[]).unwrap();
+        self.add_type_class("Bounded", &[]).unwrap();
+        self.add_type_class("Enum", &[]).unwrap();
+        self.add_type_class("Functor", &[]).unwrap();
+        self.add_type_class("Monad", &[]).unwrap();
+    }
+
+    fn add_num_type_classes(&mut self) {
+        self.add_type_class("Num", &["Eq".into(), "Show".into()])
+            .unwrap();
+        self.add_type_class("Real", &["Num".into(), "Ord".into()])
+            .unwrap();
+        self.add_type_class("Fractional", &["Num".into()]).unwrap();
+        self.add_type_class("Integral", &["Real".into(), "Enum".into()])
+            .unwrap();
+        self.add_type_class("RealFrac", &["Real".into(), "Fractional".into()])
+            .unwrap();
+        self.add_type_class("Floating", &["Fractional".into()])
+            .unwrap();
+        self.add_type_class("RealFloat", &["RealFrac".into(), "Floating".into()])
+            .unwrap();
     }
 }
 
@@ -1620,9 +1594,7 @@ mod tests {
 
         let mut ti = TypeInference::default();
 
-        let ce = TypeClassEnvironment::default()
-            .example_instances()
-            .expect("example instances should work");
+        let ce = TypeClassEnvironment::example_instances();
 
         let assumptions = ti.program(&ce, &[], program).expect("is well typed");
         assert_eq!(assumptions.len(), 1);
