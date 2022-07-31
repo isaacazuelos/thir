@@ -13,6 +13,10 @@ impl Assumption {
         Assumption { id, scheme }
     }
 
+    pub fn scheme(&self) -> &Scheme {
+        &self.scheme
+    }
+
     // TODO: do this with Iterator::find at the call site?
     pub fn find(wanted: &Id, assumptions: &[Assumption]) -> Result<Scheme> {
         for Assumption { id, scheme } in assumptions {

@@ -15,22 +15,21 @@ mod util;
 
 use check::{Expr, Literal, Program, TypeInference};
 
+use crate::check::{BindingGroup, Equation, ImplicitBinding};
+
 fn main() {
     // the program `x = "Hello world!"`
-    let program = Program {
-        binding_groups: vec![(
-            // binding groups
-            vec![], // explicit type signatures
-            vec![vec![(
-                // implicit types
-                "x".into(), // id of thing being bound
-                vec![(
-                    vec![],                                          // patterns to the left of the `=`
-                    Expr::Lit(Literal::Str("Hello, world!".into())), // expression on the right of the `=`
-                )],
-            )]],
-        )],
-    };
+    let program = Program::new(vec![BindingGroup::new(
+        vec![],
+        vec![vec![ImplicitBinding::new(
+            // implicit types
+            "x".into(), // id of thing being bound
+            vec![Equation::new(
+                vec![],
+                Expr::Literal(Literal::String("Hello, world!".into())),
+            )],
+        )]],
+    )]);
 
     let type_context = TypeInference::default();
 
