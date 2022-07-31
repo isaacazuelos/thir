@@ -12,14 +12,14 @@
 
 use std::{collections::HashMap, rc::Rc};
 
-use crate::util::{append, intersection, lookup, minus, partition, union, zip_with, zip_with_try};
+use crate::util::{append, intersection, minus, partition, union, zip_with, zip_with_try};
 
 type Error = String;
 
 // These are still not really interned, so we'll probably end up with duplicates
 // of things like "Eq". Still better than `String` everywhere though.
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-struct Id {
+pub struct Id {
     name: Rc<String>,
 }
 
@@ -104,6 +104,23 @@ impl TypeVariable {
             id: id.into(),
             kind,
         }
+    }
+
+    fn maps_to(&self, t: &Type) -> Vec<Substitution> {
+        vec![Substitution {
+            from: self.clone(),
+            to: t.clone(),
+        }]
+    }
+
+    fn find_type_in(&self, substitutions: &[Substitution]) -> Option<Type> {
+        for s in substitutions {
+            if &s.from == self {
+                return Some(s.to.clone());
+            }
+        }
+
+        None
     }
 }
 
@@ -237,7 +254,36 @@ impl HasKind for Type {
 // the Haskell lists. We could also use the same IDs here to make things
 // cheaper.
 
-type Substitutions = Vec<(TypeVariable, Type)>;
+#[derive(Debug, Clone, PartialEq)]
+struct Substitution {
+    from: TypeVariable,
+    to: Type,
+}
+
+impl Substitution {
+    fn new(from: TypeVariable, to: Type) -> Substitution {
+        Substitution { from, to }
+    }
+}
+
+fn at_at(s1: &[Substitution], s2: &[Substitution]) -> Vec<Substitution> {
+    let mut substitutions = Vec::new();
+
+    // [(u, apply s1 t) | (u, t) <- s2]
+    for s in s2.iter() {
+        substitutions.push(Substitution {
+            from: s.from.clone(),
+            to: s.to.apply(s1),
+        });
+    }
+
+    // ++ s1
+    for s in s1.iter() {
+        substitutions.push(s.clone());
+    }
+
+    substitutions
+}
 
 // Since we don't have fancy user-defined operators to use in Rust, I'll have to
 // use regular functions with names for instead when operators are defined.
@@ -245,21 +291,17 @@ type Substitutions = Vec<(TypeVariable, Type)>;
 // None of the operators in [`std::ops`] really looks like `+->`. Probably `>>`
 // is the closes option, but that seems unwise.
 
-fn maps_to(u: &TypeVariable, t: &Type) -> Substitutions {
-    vec![(u.clone(), t.clone())]
-}
-
 /// I had to swap the argument orders here for `self` to work.
 trait Types {
-    fn apply(&self, s: &Substitutions) -> Self;
+    fn apply(&self, s: &[Substitution]) -> Self;
     fn type_variables(&self) -> Vec<TypeVariable>;
 }
 
 impl Types for Type {
-    fn apply(&self, s: &Substitutions) -> Self {
+    fn apply(&self, s: &[Substitution]) -> Self {
         match self {
-            Type::Variable(u) => match lookup(u, s) {
-                Some(t) => t.clone(),
+            Type::Variable(u) => match u.find_type_in(s) {
+                Some(t) => t,
                 None => self.clone(),
             },
             Type::Applied(l, r) => l.apply(s).apply_to(r.apply(s)),
@@ -282,7 +324,7 @@ impl<T> Types for Vec<T>
 where
     T: Types,
 {
-    fn apply(&self, s: &Substitutions) -> Self {
+    fn apply(&self, s: &[Substitution]) -> Self {
         self.iter().map(|t| t.apply(s)).collect()
     }
     fn type_variables(&self) -> Vec<TypeVariable> {
@@ -292,30 +334,6 @@ where
     }
 }
 
-// It's unfortunate they don't give a more pronounceable name to the `@@`
-// function. This is somewhere using iterators would probably pay off a lot.
-
-// The paper includes a properties which would make this a great candidate for
-// property-based testing. I'll try to write these out as I go now.
-//
-// > apply (s1@@s2) = apply s1 . apply s2
-
-fn at_at(s1: &Substitutions, s2: &Substitutions) -> Substitutions {
-    let mut buf = Vec::new();
-
-    // [(u, apply s1 t) | (u, t) <- s2]
-    for (u, t) in s2 {
-        buf.push((u.clone(), t.apply(s1)));
-    }
-
-    // ++ s1
-    for s in s1 {
-        buf.push(s.clone());
-    }
-
-    buf
-}
-
 // We can't quite translate this over any `Monad m`.
 //
 // I'm assuming this is going to be over `Result` for now. We might need to make
@@ -323,9 +341,9 @@ fn at_at(s1: &Substitutions, s2: &Substitutions) -> Substitutions {
 
 // Here `merge` is `@@`, but it checks that the order of the arguments won't
 // matter.
-fn merge(s1: &Substitutions, s2: &Substitutions) -> Result<Substitutions> {
-    let s1_vars: Vec<_> = s1.iter().map(|s| s.0.clone()).collect();
-    let s2_vars: Vec<_> = s2.iter().map(|s| s.0.clone()).collect();
+fn merge(s1: &[Substitution], s2: &[Substitution]) -> Result<Vec<Substitution>> {
+    let s1_vars: Vec<_> = s1.iter().map(|s| s.from.clone()).collect();
+    let s2_vars: Vec<_> = s2.iter().map(|s| s.from.clone()).collect();
 
     for v in intersection(&s1_vars, &s2_vars) {
         if Type::Variable(v.clone()).apply(s1) != Type::Variable(v).apply(s2) {
@@ -344,7 +362,7 @@ fn merge(s1: &Substitutions, s2: &Substitutions) -> Result<Substitutions> {
 // `Monad m`s we need. Hopefully it's just one or two...
 
 // mgu is for 'most general unifier'.
-fn most_general_unifier(t1: &Type, t2: &Type) -> Result<Substitutions> {
+fn most_general_unifier(t1: &Type, t2: &Type) -> Result<Vec<Substitution>> {
     match (t1, t2) {
         (Type::Applied(l, r), Type::Applied(l_, r_)) => {
             // Cool to see `?` work as a monad here -- it doesn't always!
@@ -353,34 +371,32 @@ fn most_general_unifier(t1: &Type, t2: &Type) -> Result<Substitutions> {
             Ok(at_at(&s2, &s1))
         }
         (Type::Variable(u), t) | (t, Type::Variable(u)) => var_bind(u, t),
-        (Type::Constructor(t1), Type::Constructor(t2)) if t1 == t2 => Ok(Substitutions::default()),
+        (Type::Constructor(t1), Type::Constructor(t2)) if t1 == t2 => Ok(Vec::default()),
         _ => Err(format!("types do not unify: {:?}, {:?}", t1, t2)),
     }
 }
 
-fn var_bind(u: &TypeVariable, t: &Type) -> Result<Substitutions> {
+fn var_bind(u: &TypeVariable, t: &Type) -> Result<Vec<Substitution>> {
     if matches!(t, Type::Variable(t_) if t_ == u) {
-        Ok(Substitutions::default())
+        Ok(Vec::default())
     } else if t.type_variables().contains(u) {
         Err("occurs check fails".into())
     } else if u.kind() != t.kind() {
         Err("kinds do not match".into())
     } else {
-        Ok(maps_to(u, t))
+        Ok(u.maps_to(t))
     }
 }
 
-fn match_(t1: &Type, t2: &Type) -> Result<Substitutions> {
+fn match_(t1: &Type, t2: &Type) -> Result<Vec<Substitution>> {
     match (t1, t2) {
         (Type::Applied(l, r), Type::Applied(l_, r_)) => {
             let sl = match_(l, l_)?;
             let sr = match_(r, r_)?;
             merge(&sl, &sr)
         }
-        (Type::Variable(u), t) if u.kind() == t.kind() => Ok(maps_to(u, t)),
-        (Type::Constructor(tc1), Type::Constructor(tc2)) if tc1 == tc2 => {
-            Ok(Substitutions::default())
-        }
+        (Type::Variable(u), t) if u.kind() == t.kind() => Ok(u.maps_to(t)),
+        (Type::Constructor(tc1), Type::Constructor(tc2)) if tc1 == tc2 => Ok(Vec::default()),
         (t1, t2) => Err(format!("types do not match: {:?}, {:?}", t1, t2)),
     }
 }
@@ -396,8 +412,11 @@ fn match_(t1: &Type, t2: &Type) -> Result<Substitutions> {
 // structs, but this lets us name the constructors to better match the paper.
 
 #[derive(Debug, Clone, PartialEq)]
-enum Qualified<T> {
-    // This is the `:=>` constructor in
+pub enum Qualified<T> {
+    // This is the `:=>` constructor in the paper.
+    //
+    // In the final assumptions produced, it's the trait constraints. The stuff
+    // in the `where` clauses for Rust.
     Then(Vec<Predicate>, T),
 }
 
@@ -413,7 +432,7 @@ impl<T: Clone> Qualified<T> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Predicate {
+pub enum Predicate {
     IsIn(Id, Type),
 }
 
@@ -427,7 +446,7 @@ impl<T> Types for Qualified<T>
 where
     T: Types,
 {
-    fn apply(&self, s: &Substitutions) -> Self {
+    fn apply(&self, s: &[Substitution]) -> Self {
         let Qualified::Then(ps, t) = self;
         Qualified::Then(ps.apply(s), t.apply(s))
     }
@@ -439,7 +458,7 @@ where
 }
 
 impl Types for Predicate {
-    fn apply(&self, s: &Substitutions) -> Self {
+    fn apply(&self, s: &[Substitution]) -> Self {
         let Predicate::IsIn(i, t) = self;
         Predicate::IsIn(i.clone(), t.apply(s))
     }
@@ -450,19 +469,19 @@ impl Types for Predicate {
     }
 }
 
-fn most_general_unifier_predicate(a: &Predicate, b: &Predicate) -> Result<Substitutions> {
+fn most_general_unifier_predicate(a: &Predicate, b: &Predicate) -> Result<Vec<Substitution>> {
     lift(most_general_unifier, a, b)
 }
 
-fn match_predicate(a: &Predicate, b: &Predicate) -> Result<Substitutions> {
+fn match_predicate(a: &Predicate, b: &Predicate) -> Result<Vec<Substitution>> {
     lift(match_, a, b)
 }
 
 // Here come the primes. I'll use `_` in place of `'` where I can.
 
-fn lift<M>(m: M, a: &Predicate, b: &Predicate) -> Result<Substitutions>
+fn lift<M>(m: M, a: &Predicate, b: &Predicate) -> Result<Vec<Substitution>>
 where
-    M: Fn(&Type, &Type) -> Result<Substitutions>,
+    M: Fn(&Type, &Type) -> Result<Vec<Substitution>>,
 {
     let Predicate::IsIn(i, t) = a;
     let Predicate::IsIn(i_, t_) = b;
@@ -552,7 +571,7 @@ fn ord_example() -> TypeClass {
 type EnvironmentTransformer = fn(&TypeClassEnvironment) -> Result<TypeClassEnvironment>;
 
 #[derive(Clone, Default, Debug)]
-struct TypeClassEnvironment {
+pub struct TypeClassEnvironment {
     classes: HashMap<Id, TypeClass>,
     defaults: Vec<Type>,
 }
@@ -815,12 +834,14 @@ impl TypeClassEnvironment {
 // ## 8. Type Schemes
 
 #[derive(Debug, Clone, PartialEq)]
-enum Scheme {
+pub enum Scheme {
+    // These are the generic types. In Rust, the stuff in <> when introducing
+    // type variables.
     ForAll(Vec<Kind>, Qualified<Type>),
 }
 
 impl Types for Scheme {
-    fn apply(&self, s: &Substitutions) -> Self {
+    fn apply(&self, s: &[Substitution]) -> Self {
         let Scheme::ForAll(ks, qt) = self.clone();
         Scheme::ForAll(ks, qt.apply(s))
     }
@@ -839,10 +860,13 @@ fn quantify(vs: &[TypeVariable], qt: Qualified<Type>) -> Scheme {
         .cloned()
         .collect();
     let ks = vs_.iter().map(|v| v.kind().clone()).collect();
-    let s = vs_
+    let s: Vec<Substitution> = vs_
         .iter()
         .enumerate()
-        .map(|(i, v)| (v.clone(), Type::Gen(i)))
+        .map(|(i, v)| Substitution {
+            from: v.clone(),
+            to: Type::Gen(i),
+        })
         .collect();
 
     Scheme::ForAll(ks, qt.apply(&s))
@@ -859,10 +883,10 @@ impl From<Type> for Scheme {
 // I'm not going to try and come up with a name for `:>:`
 
 #[derive(Debug, Clone, PartialEq)]
-struct Assumption(Id, Scheme);
+pub struct Assumption(Id, Scheme);
 
 impl Types for Assumption {
-    fn apply(&self, s: &Substitutions) -> Self {
+    fn apply(&self, s: &[Substitution]) -> Self {
         let Assumption(i, sc) = self;
         Assumption(i.clone(), sc.apply(s))
     }
@@ -887,13 +911,13 @@ fn find(i: &Id, assumptions: &[Assumption]) -> Result<Scheme> {
 // Well, not really.
 
 #[derive(Debug, Default)]
-struct TypeInference {
-    substitutions: Substitutions,
+pub struct TypeInference {
+    substitutions: Vec<Substitution>,
     next_var: usize,
 }
 
 impl TypeInference {
-    fn get_subst(&self) -> &Substitutions {
+    fn get_subst(&self) -> &[Substitution] {
         &self.substitutions
     }
 
@@ -904,7 +928,7 @@ impl TypeInference {
         Ok(())
     }
 
-    fn ext_subst(&mut self, s: &Substitutions) {
+    fn ext_subst(&mut self, s: &[Substitution]) {
         // We should _definitely_ look at the definition of `at_at` and unpack
         // things a bit here.
         self.substitutions = at_at(&self.substitutions, s);
@@ -981,7 +1005,7 @@ type Infer<E, T> = dyn Fn(
 ) -> Result<(Vec<Predicate>, T)>;
 
 #[derive(Debug, Clone, PartialEq)]
-enum Literal {
+pub enum Literal {
     Int(i64),
     Char(char),
     Rat(f64), // I know, but close enough.
@@ -1008,7 +1032,7 @@ impl TypeInference {
 // ### 11.2 Patterns
 
 #[derive(Debug, Clone)]
-enum Pat {
+pub enum Pat {
     Var(Id),                   // `a`
     Wildcard,                  // `_`
     As(Id, Box<Pat>),          // `id@pat`
@@ -1079,7 +1103,7 @@ impl TypeInference {
 // ### 11.3 Expressions
 
 #[derive(Debug, Clone)]
-enum Expr {
+pub enum Expr {
     Var(Id),
     Lit(Literal),
     Const(Assumption),
@@ -1320,12 +1344,13 @@ impl TypeClassEnvironment {
         &self,
         vs: Vec<TypeVariable>,
         ps: &[Predicate],
-    ) -> Result<Substitutions> {
+    ) -> Result<Vec<Substitution>> {
         self.with_defaults(
             |vps, ts| {
                 vps.iter()
                     .map(|(fst, _)| fst.clone())
                     .zip(ts.iter().cloned())
+                    .map(|(from, to)| Substitution::new(from, to))
                     .collect()
             },
             &vs,
@@ -1435,8 +1460,8 @@ impl TypeInference {
     }
 }
 
-type BindingGroup = (Vec<ExplicitBinding>, Vec<Vec<ImplicitBinding>>);
-type Program = Vec<BindingGroup>;
+pub type BindingGroup = (Vec<ExplicitBinding>, Vec<Vec<ImplicitBinding>>);
+pub type Program = Vec<BindingGroup>;
 
 impl TypeInference {
     fn bind_group(
@@ -1479,7 +1504,7 @@ impl TypeInference {
         Ok((append(ps, qss), all_as))
     }
 
-    fn program(
+    pub fn program(
         &mut self,
         ce: &TypeClassEnvironment,
         as_: &[Assumption],
