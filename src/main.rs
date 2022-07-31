@@ -13,31 +13,32 @@
 mod check;
 mod util;
 
-use check::{Expr, Literal, Program, TypeClassEnvironment, TypeInference};
+use check::{Expr, Infer, Literal, Program, TypeInference};
 
 fn main() {
     // the program `x = "Hello world!"`
-    let program: Program = vec![(
-        // binding groups
-        vec![], // explicit type signatures
-        vec![vec![(
-            // implicit types
-            "x".into(), // id of thing being bound
-            vec![(
-                vec![],                                          // patterns to the left of the `=`
-                Expr::Lit(Literal::Str("Hello, world!".into())), // expression on the right of the `=`
-            )],
-        )]],
-    )];
+    let program = Program {
+        binding_groups: vec![(
+            // binding groups
+            vec![], // explicit type signatures
+            vec![vec![(
+                // implicit types
+                "x".into(), // id of thing being bound
+                vec![(
+                    vec![],                                          // patterns to the left of the `=`
+                    Expr::Lit(Literal::Str("Hello, world!".into())), // expression on the right of the `=`
+                )],
+            )]],
+        )],
+    };
 
-    let mut ti = TypeInference::default();
-    let ce = TypeClassEnvironment::default();
-    let assumptions = ti
-        .program(&ce, &[], program.clone())
-        .expect("is well typed");
+    let mut type_context = TypeInference::default();
+
+    // program.infer(&mut type_context)?;
 
     println!(
         "{:#?}\nare the type constraints of the program:\n{:#?}",
-        assumptions, program
+        type_context.assumptions(),
+        program
     );
 }
