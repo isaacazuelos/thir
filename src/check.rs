@@ -10,20 +10,39 @@
 
 // ## Preliminaries
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::util::{append, intersection, lookup, minus, partition, union, zip_with, zip_with_try};
 
-// For simplicity, we're not worrying too much about reducing shared references.
-
 type Error = String;
 
-// kind of ties our hands at defining new ones, but it's nicer to avoid all the
-// `.into` calls for now.
-type Id = String;
+// These are still not really interned, so we'll probably end up with duplicates
+// of things like "Eq". Still better than `String` everywhere though.
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+struct Id {
+    name: Rc<String>,
+}
 
-fn enum_id(i: usize) -> Id {
-    format!("v{i}")
+impl std::fmt::Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl From<&str> for Id {
+    fn from(s: &str) -> Self {
+        Id {
+            name: Rc::new(String::from(s)),
+        }
+    }
+}
+
+impl From<usize> for Id {
+    fn from(i: usize) -> Self {
+        Id {
+            name: Rc::new(format!("v{i}")),
+        }
+    }
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -53,8 +72,8 @@ impl Kind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-    Var(Tyvar),
-    Con(Tycon),
+    Var(TypeVariable),
+    Con(TypeConstructor),
     Ap(Box<Type>, Box<Type>),
     Gen(usize), // for Type Schemes, not used until section 8
 }
@@ -74,10 +93,34 @@ impl Type {
 // be a pair of `Copy` indexes into some context if we wanted to be efficient.
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Tyvar(Id, Kind);
+pub struct TypeVariable {
+    id: Id,
+    kind: Kind,
+}
+
+impl TypeVariable {
+    fn new(id: impl Into<Id>, kind: Kind) -> Self {
+        TypeVariable {
+            id: id.into(),
+            kind,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Tycon(Id, Kind);
+pub struct TypeConstructor {
+    id: Id,
+    kind: Kind,
+}
+
+impl TypeConstructor {
+    fn new(id: impl Into<Id>, kind: Kind) -> Self {
+        TypeConstructor {
+            id: id.into(),
+            kind,
+        }
+    }
+}
 
 // Putting these in a module to namespace them instead of using the prefix
 // naming scheme used in the paper. A name like `prim::unit` is `tUnit` in the
@@ -92,43 +135,46 @@ mod prim {
     use super::*;
 
     pub fn unit() -> Type {
-        Type::Con(Tycon("()".into(), Kind::Star))
+        Type::Con(TypeConstructor::new("()", Kind::Star))
     }
 
     pub fn character() -> Type {
-        Type::Con(Tycon("Char".into(), Kind::Star))
+        Type::Con(TypeConstructor::new("Char", Kind::Star))
     }
 
     pub fn int() -> Type {
-        Type::Con(Tycon("Int".into(), Kind::Star))
+        Type::Con(TypeConstructor::new("Int", Kind::Star))
     }
 
     pub fn integer() -> Type {
-        Type::Con(Tycon("Integer".into(), Kind::Star))
+        Type::Con(TypeConstructor::new("Integer", Kind::Star))
     }
 
     pub fn float() -> Type {
-        Type::Con(Tycon("Float".into(), Kind::Star))
+        Type::Con(TypeConstructor::new("Float", Kind::Star))
     }
 
     pub fn double() -> Type {
-        Type::Con(Tycon("Double".into(), Kind::Star))
+        Type::Con(TypeConstructor::new("Double", Kind::Star))
     }
 
     pub fn list() -> Type {
-        Type::Con(Tycon("[]".into(), Kind::fun(Kind::Star, Kind::Star)))
+        Type::Con(TypeConstructor::new(
+            "[]",
+            Kind::fun(Kind::Star, Kind::Star),
+        ))
     }
 
     pub fn arrow() -> Type {
-        Type::Con(Tycon(
-            "(->)".into(),
+        Type::Con(TypeConstructor::new(
+            "(->)",
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
         ))
     }
 
     pub fn tuple_2() -> Type {
-        Type::Con(Tycon(
-            "(,)".into(),
+        Type::Con(TypeConstructor::new(
+            "(,)",
             Kind::fun(Kind::Star, Kind::fun(Kind::Star, Kind::Star)),
         ))
     }
@@ -157,15 +203,15 @@ trait HasKind {
     fn kind(&self) -> &Kind;
 }
 
-impl HasKind for Tyvar {
+impl HasKind for TypeVariable {
     fn kind(&self) -> &Kind {
-        &self.1
+        &self.kind
     }
 }
 
-impl HasKind for Tycon {
+impl HasKind for TypeConstructor {
     fn kind(&self) -> &Kind {
-        &self.1
+        &self.kind
     }
 }
 
@@ -192,7 +238,7 @@ impl HasKind for Type {
 // the Haskell lists. We could also use the same IDs here to make things
 // cheaper.
 
-type Subst = Vec<(Tyvar, Type)>;
+type Subst = Vec<(TypeVariable, Type)>;
 
 fn null_subst() -> Subst {
     Vec::default()
@@ -204,14 +250,14 @@ fn null_subst() -> Subst {
 // None of the operators in [`std::ops`] really looks like `+->`. Probably `>>`
 // is the closes option, but that seems unwise.
 
-fn maps_to(u: &Tyvar, t: &Type) -> Subst {
+fn maps_to(u: &TypeVariable, t: &Type) -> Subst {
     vec![(u.clone(), t.clone())]
 }
 
 /// I had to swap the argument orders here for `self` to work.
 trait Types {
     fn apply(&self, s: &Subst) -> Self;
-    fn tv(&self) -> Vec<Tyvar>;
+    fn tv(&self) -> Vec<TypeVariable>;
 }
 
 impl Types for Type {
@@ -226,7 +272,7 @@ impl Types for Type {
         }
     }
 
-    fn tv(&self) -> Vec<Tyvar> {
+    fn tv(&self) -> Vec<TypeVariable> {
         match self {
             Type::Var(u) => vec![u.clone()],
             Type::Ap(l, r) => union(&l.tv(), &r.tv()),
@@ -244,8 +290,8 @@ where
     fn apply(&self, s: &Subst) -> Self {
         self.iter().map(|t| t.apply(s)).collect()
     }
-    fn tv(&self) -> Vec<Tyvar> {
-        let mut vars: Vec<Tyvar> = self.iter().flat_map(|t| t.tv()).collect();
+    fn tv(&self) -> Vec<TypeVariable> {
+        let mut vars: Vec<TypeVariable> = self.iter().flat_map(|t| t.tv()).collect();
         vars.dedup();
         vars
     }
@@ -317,7 +363,7 @@ fn mgu(t1: &Type, t2: &Type) -> Result<Subst> {
     }
 }
 
-fn var_bind(u: &Tyvar, t: &Type) -> Result<Subst> {
+fn var_bind(u: &TypeVariable, t: &Type) -> Result<Subst> {
     if matches!(t, Type::Var(t_) if t_ == u) {
         Ok(null_subst())
     } else if t.tv().contains(u) {
@@ -375,7 +421,7 @@ enum Pred {
 }
 
 impl Pred {
-    fn is_in(id: impl Into<String>, t: Type) -> Pred {
+    fn is_in(id: impl Into<Id>, t: Type) -> Pred {
         Pred::IsIn(id.into(), t)
     }
 }
@@ -389,7 +435,7 @@ where
         Qual::Then(ps.apply(s), t.apply(s))
     }
 
-    fn tv(&self) -> Vec<Tyvar> {
+    fn tv(&self) -> Vec<TypeVariable> {
         let Qual::Then(ps, t) = self;
         union(&ps.tv(), &t.tv())
     }
@@ -398,10 +444,10 @@ where
 impl Types for Pred {
     fn apply(&self, s: &Subst) -> Self {
         let Pred::IsIn(i, t) = self;
-        Pred::IsIn(i.into(), t.apply(s))
+        Pred::IsIn(i.clone(), t.apply(s))
     }
 
-    fn tv(&self) -> Vec<Tyvar> {
+    fn tv(&self) -> Vec<TypeVariable> {
         let Pred::IsIn(i, t) = self;
         t.tv()
     }
@@ -466,16 +512,16 @@ fn ord_example() -> Class {
             Qual::then(
                 &[
                     // Ord a constraint
-                    Pred::is_in("Ord", Type::Var(Tyvar("a".into(), Kind::Star))),
+                    Pred::is_in("Ord", Type::Var(TypeVariable::new("a", Kind::Star))),
                     // Ord b constraint
-                    Pred::is_in("Ord", Type::Var(Tyvar("b".into(), Kind::Star))),
+                    Pred::is_in("Ord", Type::Var(TypeVariable::new("b", Kind::Star))),
                 ],
                 // => Ord (a, b)
                 Pred::IsIn(
                     "Ord".into(),
                     pair(
-                        Type::Var(Tyvar("a".into(), Kind::Star)),
-                        Type::Var(Tyvar("b".into(), Kind::Star)),
+                        Type::Var(TypeVariable::new("a", Kind::Star)),
+                        Type::Var(TypeVariable::new("b", Kind::Star)),
                     ),
                 ),
             ),
@@ -560,7 +606,6 @@ impl ClassEnv {
     fn add_class(&self, i: Id, is: &[Id]) -> Result<ClassEnv> {
         let mut new = self.clone();
 
-        let is: Vec<&str> = is.iter().map(AsRef::as_ref).collect(); // buh
         new.add_class_mut(i, &is)?;
         Ok(new)
     }
@@ -588,14 +633,14 @@ impl ClassEnv {
         new.add_inst_mut(&[], &Pred::is_in("Ord", prim::int()))?;
         new.add_inst_mut(
             &[
-                Pred::is_in("Ord", Type::Var(Tyvar("a".into(), Kind::Star))),
-                Pred::is_in("Ord", Type::Var(Tyvar("b".into(), Kind::Star))),
+                Pred::is_in("Ord", Type::Var(TypeVariable::new("a", Kind::Star))),
+                Pred::is_in("Ord", Type::Var(TypeVariable::new("b", Kind::Star))),
             ],
             &Pred::IsIn(
                 "Ord".into(),
                 pair(
-                    Type::Var(Tyvar("a".into(), Kind::Star)),
-                    Type::Var(Tyvar("b".into(), Kind::Star)),
+                    Type::Var(TypeVariable::new("a", Kind::Star)),
+                    Type::Var(TypeVariable::new("b", Kind::Star)),
                 ),
             ),
         )?;
@@ -607,7 +652,7 @@ impl ClassEnv {
 
     fn add_core_classes_mut(&mut self) -> Result<()> {
         self.add_class_mut("Eq", &[])?;
-        self.add_class_mut("Ord", &["Eq"])?;
+        self.add_class_mut("Ord", &["Eq".into()])?;
         self.add_class_mut("Show", &[])?;
         self.add_class_mut("Read", &[])?;
         self.add_class_mut("Bounded", &[])?;
@@ -619,26 +664,25 @@ impl ClassEnv {
     }
 
     fn add_num_classes_mut(&mut self) -> Result<()> {
-        self.add_class_mut("Num", &["Eq", "Show"])?;
-        self.add_class_mut("Real", &["Num", "Ord"])?;
-        self.add_class_mut("Fractional", &["Num"])?;
-        self.add_class_mut("Integral", &["Real", "Enum"])?;
-        self.add_class_mut("RealFrac", &["Real", "Fractional"])?;
-        self.add_class_mut("Floating", &["Fractional"])?;
-        self.add_class_mut("RealFloat", &["RealFrac", "Floating"])?;
+        self.add_class_mut("Num", &["Eq".into(), "Show".into()])?;
+        self.add_class_mut("Real", &["Num".into(), "Ord".into()])?;
+        self.add_class_mut("Fractional", &["Num".into()])?;
+        self.add_class_mut("Integral", &["Real".into(), "Enum".into()])?;
+        self.add_class_mut("RealFrac", &["Real".into(), "Fractional".into()])?;
+        self.add_class_mut("Floating", &["Fractional".into()])?;
+        self.add_class_mut("RealFloat", &["RealFrac".into(), "Floating".into()])?;
 
         Ok(())
     }
 
-    fn add_class_mut(&mut self, id: impl Into<Id>, supers: &[&str]) -> Result<()> {
+    fn add_class_mut(&mut self, id: impl Into<Id>, supers: &[Id]) -> Result<()> {
         let id = id.into();
-        let supers: Vec<Id> = supers.iter().map(|s| String::from(*s)).collect();
 
         if let Some(class) = self.classes(&id) {
             return Err(format!("class already defined: {id}"));
         }
 
-        for superclass in &supers {
+        for superclass in supers {
             if !self.classes.contains_key(superclass) {
                 return Err(format!("superclass {superclass} not defined for {id}"));
             }
@@ -818,14 +862,14 @@ impl Types for Scheme {
         Scheme::ForAll(ks, qt.apply(s))
     }
 
-    fn tv(&self) -> Vec<Tyvar> {
+    fn tv(&self) -> Vec<TypeVariable> {
         let Scheme::ForAll(ks, qt) = self.clone();
         qt.tv()
     }
 }
 
-fn quantify(vs: &[Tyvar], qt: Qual<Type>) -> Scheme {
-    let vs_: Vec<Tyvar> = qt.tv().iter().filter(|v| vs.contains(v)).cloned().collect();
+fn quantify(vs: &[TypeVariable], qt: Qual<Type>) -> Scheme {
+    let vs_: Vec<TypeVariable> = qt.tv().iter().filter(|v| vs.contains(v)).cloned().collect();
     let ks = vs_.iter().map(|v| v.kind().clone()).collect();
     let s = vs_
         .iter()
@@ -855,7 +899,7 @@ impl Types for Assump {
         Assump(i.clone(), sc.apply(s))
     }
 
-    fn tv(&self) -> Vec<Tyvar> {
+    fn tv(&self) -> Vec<TypeVariable> {
         let Assump(i, sc) = self;
         sc.tv()
     }
@@ -901,7 +945,7 @@ impl TI {
     fn new_type_var(&mut self, k: Kind) -> Type {
         let i = self.next_var;
         self.next_var += 1;
-        Type::Var(Tyvar(enum_id(i), k))
+        Type::Var(TypeVariable::new(i, k))
     }
 
     fn fresh_inst(&mut self, s: &Scheme) -> Qual<Type> {
@@ -1139,7 +1183,12 @@ impl TI {
 
 // ### 11.5
 
-fn split(ce: &ClassEnv, fs: &[Tyvar], gs: &[Tyvar], ps: &[Pred]) -> Result<(Vec<Pred>, Vec<Pred>)> {
+fn split(
+    ce: &ClassEnv,
+    fs: &[TypeVariable],
+    gs: &[TypeVariable],
+    ps: &[Pred],
+) -> Result<(Vec<Pred>, Vec<Pred>)> {
     let ps_ = ce.reduce(ps)?;
     let (ds, rs) = partition(|p| p.tv().iter().all(|t| fs.contains(t)), ps_);
     let rs_ = ce.defaulted_preds(append(fs.to_vec(), gs.to_vec()), &rs)?;
@@ -1148,7 +1197,7 @@ fn split(ce: &ClassEnv, fs: &[Tyvar], gs: &[Tyvar], ps: &[Pred]) -> Result<(Vec<
 
 // #### 11.5.1
 
-type Ambiguity = (Tyvar, Vec<Pred>);
+type Ambiguity = (TypeVariable, Vec<Pred>);
 
 const NUM_CLASSES: &[&str] = &[
     "Num",
@@ -1181,12 +1230,13 @@ fn std_classes() -> Vec<Id> {
     [STD_CLASSES, NUM_CLASSES]
         .iter()
         .flat_map(|i| i.iter())
-        .map(|s| s.to_string())
+        .cloned()
+        .map(|s| Id::from(s))
         .collect()
 }
 
 impl ClassEnv {
-    fn ambiguities(&self, vs: &[Tyvar], ps: &[Pred]) -> Vec<Ambiguity> {
+    fn ambiguities(&self, vs: &[TypeVariable], ps: &[Pred]) -> Vec<Ambiguity> {
         let mut buf = vec![];
 
         for v in minus(ps.to_vec().tv(), vs).iter() {
@@ -1208,10 +1258,11 @@ impl ClassEnv {
     }
 
     fn candidates(&self, (v, qs): &Ambiguity) -> Vec<Type> {
-        let mut is = vec![];
+        let mut is: Vec<Id> = vec![];
         let mut ts = vec![];
+
         for Pred::IsIn(i, t) in qs.iter() {
-            is.push(i);
+            is.push(i.clone());
             ts.push(t);
         }
 
@@ -1232,7 +1283,7 @@ impl ClassEnv {
         for t_ in &self.defaults {
             if !is
                 .iter()
-                .map(|i| Pred::IsIn(i.to_string(), t_.clone()))
+                .map(|i| Pred::IsIn(i.clone(), t_.clone()))
                 .all(|q| self.entail(&[], &q))
             {
                 return vec![];
@@ -1246,7 +1297,7 @@ impl ClassEnv {
         t_s
     }
 
-    fn with_defaults<F, T>(&self, f: F, vs: &[Tyvar], ps: &[Pred]) -> Result<T>
+    fn with_defaults<F, T>(&self, f: F, vs: &[TypeVariable], ps: &[Pred]) -> Result<T>
     where
         F: Fn(&[Ambiguity], &[Type]) -> T,
     {
@@ -1264,7 +1315,7 @@ impl ClassEnv {
 }
 
 impl ClassEnv {
-    fn defaulted_preds(&self, vs: Vec<Tyvar>, ps: &[Pred]) -> Result<Vec<Pred>> {
+    fn defaulted_preds(&self, vs: Vec<TypeVariable>, ps: &[Pred]) -> Result<Vec<Pred>> {
         self.with_defaults(
             |vps, ts| vps.iter().flat_map(|a| a.1.clone()).collect(),
             &vs,
@@ -1272,7 +1323,7 @@ impl ClassEnv {
         )
     }
 
-    fn default_subst(&self, vs: Vec<Tyvar>, ps: &[Pred]) -> Result<Subst> {
+    fn default_subst(&self, vs: Vec<TypeVariable>, ps: &[Pred]) -> Result<Subst> {
         self.with_defaults(
             |vps, ts| {
                 vps.iter()
@@ -1348,8 +1399,8 @@ impl TI {
 
         let ps_: Vec<Pred> = pss.iter().flatten().map(|p| p.apply(s)).collect();
         let ts_: Vec<Type> = ts.apply(s);
-        let fs: Vec<Tyvar> = as_.to_vec().apply(s).tv();
-        let vss: Vec<Vec<Tyvar>> = ts_.iter().map(Types::tv).collect();
+        let fs: Vec<TypeVariable> = as_.to_vec().apply(s).tv();
+        let vss: Vec<Vec<TypeVariable>> = ts_.iter().map(Types::tv).collect();
         let gs = minus(
             vss.iter()
                 .cloned()
