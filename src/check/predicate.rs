@@ -14,7 +14,7 @@ impl Predicate {
     }
 
     pub fn in_hfn(&self) -> bool {
-        let Predicate::IsIn(c, t) = self;
+        let Predicate::IsIn(_c, t) = self;
 
         // This is pulled out into a function since we call it recursively.
         //
@@ -51,7 +51,7 @@ impl Types for Predicate {
     }
 
     fn type_variables(&self) -> Vec<TypeVariable> {
-        let Predicate::IsIn(i, t) = self;
+        let Predicate::IsIn(_i, t) = self;
         t.type_variables()
     }
 }

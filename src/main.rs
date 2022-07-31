@@ -13,7 +13,7 @@
 mod check;
 mod util;
 
-use check::{Expr, Infer, Literal, Program, TypeInference};
+use check::{Expr, Literal, Program, TypeInference};
 
 fn main() {
     // the program `x = "Hello world!"`
@@ -32,7 +32,7 @@ fn main() {
         )],
     };
 
-    let mut type_context = TypeInference::default();
+    let type_context = TypeInference::default();
 
     // program.infer(&mut type_context)?;
 

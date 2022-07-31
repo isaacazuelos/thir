@@ -16,7 +16,7 @@ impl Types for Scheme {
     }
 
     fn type_variables(&self) -> Vec<TypeVariable> {
-        let Scheme::ForAll(ks, qt) = self.clone();
+        let Scheme::ForAll(_ks, qt) = self.clone();
         qt.type_variables()
     }
 }

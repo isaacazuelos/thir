@@ -34,7 +34,7 @@ pub use traits::{Instance, Trait};
 pub use type_inference::{Infer, TypeInference};
 pub use types::{Instantiate, Type, TypeConstructor, TypeVariable, Types};
 
-use crate::util::{append, intersection, minus, partition, union, zip_with, zip_with_try};
+use crate::util::{append, intersection, minus, partition, union};
 
 // #[cfg(test)]
 // mod tests {

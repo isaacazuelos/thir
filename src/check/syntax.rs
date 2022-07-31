@@ -10,7 +10,7 @@ pub type ImplicitBinding = (Id, Vec<Equation>);
 
 pub fn restricted(bs: &[ImplicitBinding]) -> bool {
     bs.iter()
-        .any(|(i, alts)| alts.iter().any(|alt| alt.0.is_empty()))
+        .any(|(_i, alts)| alts.iter().any(|alt| alt.0.is_empty()))
 }
 
 // ### 11.4 Alternatives

@@ -56,7 +56,7 @@ impl TypeInference {
     fn unify(&mut self, t1: &Type, t2: &Type) -> Result<()> {
         let s = self.substitutions();
         let u = &t1.apply(s).most_general_unifier(&t2.apply(s))?;
-        self.ext_subst(&u);
+        self.ext_subst(u);
         Ok(())
     }
 

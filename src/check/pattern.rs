@@ -15,7 +15,7 @@ pub enum Pattern {
 impl Infer for Pattern {
     type Output = Type;
 
-    fn infer(&self, context: &mut TypeInference) -> Result<Self::Output> {
+    fn infer(&self, _context: &mut TypeInference) -> Result<Self::Output> {
         todo!()
     }
 }

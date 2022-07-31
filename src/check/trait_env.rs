@@ -49,7 +49,7 @@ impl TraitEnvironment {
     fn add_type_class(&mut self, id: impl Into<Id>, supers: &[Id]) -> Result<()> {
         let id = id.into();
 
-        if let Some(class) = self.get(&id) {
+        if self.get(&id).is_some() {
             return Err(format!("class already defined: {id}"));
         }
 
@@ -59,7 +59,7 @@ impl TraitEnvironment {
             }
         }
 
-        let class = Trait::new(&supers, &[]);
+        let class = Trait::new(supers, &[]);
         self.classes.insert(id, class);
         Ok(())
     }
@@ -78,7 +78,7 @@ impl TraitEnvironment {
             .map(Qualified::consequence)
             .any(|q| p.overlap(q))
         {
-            return Err(format!("overlapping instances"));
+            return Err("overlapping instances".into());
         }
 
         // There's some important other stuff to check listed at the bottom of
@@ -174,7 +174,7 @@ impl TraitEnvironment {
     }
 
     fn by_instance(&self, p: &Predicate) -> Result<Vec<Predicate>> {
-        let Predicate::IsIn(i, t) = p;
+        let Predicate::IsIn(i, _t) = p;
 
         let mut buf = Vec::new();
 
@@ -256,7 +256,7 @@ impl TraitEnvironment {
         ps: &[Predicate],
     ) -> Result<Vec<Predicate>> {
         self.with_defaults(
-            |vps, ts| vps.iter().flat_map(|a| a.1.clone()).collect(),
+            |vps, _ts| vps.iter().flat_map(|a| a.1.clone()).collect(),
             &vs,
             ps,
         )
@@ -313,7 +313,7 @@ fn standard_type_classes() -> Vec<Id> {
         .iter()
         .flat_map(|i| i.iter())
         .cloned()
-        .map(|s| Id::from(s))
+        .map(Id::from)
         .collect()
 }
 
