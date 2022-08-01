@@ -13,6 +13,10 @@ impl Assumption {
         Assumption { id, scheme }
     }
 
+    pub fn id(&self) -> &Id {
+        &self.id
+    }
+
     pub fn scheme(&self) -> &Scheme {
         &self.scheme
     }

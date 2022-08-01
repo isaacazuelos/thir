@@ -24,3 +24,12 @@ impl Kind {
         Kind::Function(Box::new(lhs), Box::new(rhs))
     }
 }
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Kind::Star => write!(f, "*"),
+            Kind::Function(from, to) => write!(f, "({} -> {})", from, to),
+        }
+    }
+}

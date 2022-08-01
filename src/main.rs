@@ -1,4 +1,4 @@
-//! An attempt at writing a Haskell 98 like type checker based on the paper
+//! An attempt at writing a Haskell 98 like type checker based &on the paper
 //! [_Typing Haskell in Haskell_][thih].
 //!
 //! The goal here is just to think through the algorithm. I'm _not_ worried
@@ -17,7 +17,7 @@ use check::{Expr, Literal, Program, TypeInference};
 
 use crate::check::{BindingGroup, Equation, ImplicitBinding};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the program `x = "Hello world!"`
     let program = Program::new(vec![BindingGroup::new(
         vec![],
@@ -31,13 +31,13 @@ fn main() {
         )]],
     )]);
 
-    let type_context = TypeInference::default();
+    let mut type_context = TypeInference::default();
 
-    // program.infer(&mut type_context)?;
+    type_context.infer_types(&program)?;
 
-    println!(
-        "{:#?}\nare the type constraints of the program:\n{:#?}",
-        type_context.assumptions(),
-        program
-    );
+    println!("{program}");
+    println!("Produces these types");
+    println!("{:#?}", type_context);
+
+    Ok(())
 }

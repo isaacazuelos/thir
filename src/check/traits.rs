@@ -28,19 +28,25 @@ impl Trait {
             &[
                 // This is the `instance Ord _ where` part for unit, char, int.
                 // Notice this isn't the implementation, just the type level stuff.
-                Qualified::then(&[], Predicate::is_in("Ord", builtins::unit())),
-                Qualified::then(&[], Predicate::is_in("Ord", builtins::character())),
-                Qualified::then(&[], Predicate::is_in("Ord", builtins::int())),
+                Qualified::new(vec![], Predicate::new("Ord".into(), builtins::unit())),
+                Qualified::new(vec![], Predicate::new("Ord".into(), builtins::character())),
+                Qualified::new(vec![], Predicate::new("Ord".into(), builtins::int())),
                 // This one is `Ord a, Ord b => Ord (a, b)`
-                Qualified::then(
-                    &[
+                Qualified::new(
+                    vec![
                         // Ord a constraint
-                        Predicate::is_in("Ord", Type::Variable(TypeVariable::new("a", Kind::Star))),
+                        Predicate::new(
+                            "Ord".into(),
+                            Type::Variable(TypeVariable::new("a", Kind::Star)),
+                        ),
                         // Ord b constraint
-                        Predicate::is_in("Ord", Type::Variable(TypeVariable::new("b", Kind::Star))),
+                        Predicate::new(
+                            "Ord".into(),
+                            Type::Variable(TypeVariable::new("b", Kind::Star)),
+                        ),
                     ],
                     // => Ord (a, b)
-                    Predicate::IsIn(
+                    Predicate::new(
                         "Ord".into(),
                         builtins::make_pair(
                             Type::Variable(TypeVariable::new("a", Kind::Star)),

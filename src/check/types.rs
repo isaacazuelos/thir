@@ -82,6 +82,17 @@ impl Type {
     }
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Variable(v) => write!(f, "{}", v),
+            Type::Constructor(c) => write!(f, "{}", c),
+            Type::Applied(lhs, rhs) => write!(f, "({} {})", lhs, rhs),
+            Type::Gen(n) => write!(f, "<Gen({})>", n),
+        }
+    }
+}
+
 impl Instantiate for Type {
     fn inst(&self, ts: &[Type]) -> Type {
         match self {
@@ -169,6 +180,12 @@ impl TypeVariable {
     }
 }
 
+impl std::fmt::Display for TypeVariable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.id)
+    }
+}
+
 impl HasKind for Type {
     fn kind(&self) -> &Kind {
         match self {
@@ -204,6 +221,12 @@ impl TypeConstructor {
             id: id.into(),
             kind,
         }
+    }
+}
+
+impl std::fmt::Display for TypeConstructor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.id)
     }
 }
 

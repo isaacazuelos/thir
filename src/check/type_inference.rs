@@ -49,6 +49,16 @@ impl TypeInference {
     pub fn assume(&mut self, a: Assumption) {
         self.assumptions.push(a);
     }
+
+    pub fn infer_types<T: Infer>(&mut self, syntax: &T) -> Result<()> {
+        syntax.infer(self)?;
+
+        Ok(())
+    }
+
+    pub fn add_pred(&mut self, _predicate: Predicate) {
+        todo!()
+    }
 }
 
 // These are the older methods from the paper
@@ -67,11 +77,13 @@ impl TypeInference {
     }
 
     // TODO: better name?
-    pub fn fresh_inst(&mut self, s: &Scheme) -> Qualified<Type> {
-        let Scheme::ForAll(ks, qt) = s;
+    pub fn fresh_inst(&mut self, scheme: &Scheme) -> Qualified<Type> {
+        let ts: Vec<_> = scheme
+            .kinds()
+            .iter()
+            .map(|k| self.new_type_var(k.clone()))
+            .collect();
 
-        let ts: Vec<_> = ks.iter().map(|k| self.new_type_var(k.clone())).collect();
-
-        qt.inst(&ts)
+        scheme.qualified_type().inst(&ts)
     }
 }

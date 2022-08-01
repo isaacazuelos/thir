@@ -17,6 +17,8 @@ use std::collections::HashMap;
 
 use super::*;
 
+pub type Ambiguity = (TypeVariable, Vec<Predicate>);
+
 #[derive(Clone, Default, Debug)]
 // TODO: rethink collection types?
 pub struct TraitEnvironment {
@@ -65,7 +67,7 @@ impl TraitEnvironment {
     }
 
     fn add_instance_mut(&mut self, ps: &[Predicate], p: &Predicate) -> Result<()> {
-        let Predicate::IsIn(id, _) = p;
+        let ref id = p.id();
 
         // we could skip this check if `insts` return a result
         if self.get(id).is_none() {
@@ -88,7 +90,7 @@ impl TraitEnvironment {
             .get_mut(id)
             .unwrap()
             .instances
-            .push(Qualified::then(ps, p.clone()));
+            .push(Qualified::new(ps.to_vec(), p.clone()));
 
         Ok(())
     }
@@ -101,18 +103,24 @@ impl TraitEnvironment {
 
         new.add_prelude_classes();
 
-        new.add_instance_mut(&[], &Predicate::is_in("Ord", builtins::unit()))
+        new.add_instance_mut(&[], &Predicate::new("Ord".into(), builtins::unit()))
             .unwrap();
-        new.add_instance_mut(&[], &Predicate::is_in("Ord", builtins::character()))
+        new.add_instance_mut(&[], &Predicate::new("Ord".into(), builtins::character()))
             .unwrap();
-        new.add_instance_mut(&[], &Predicate::is_in("Ord", builtins::int()))
+        new.add_instance_mut(&[], &Predicate::new("Ord".into(), builtins::int()))
             .unwrap();
         new.add_instance_mut(
             &[
-                Predicate::is_in("Ord", Type::Variable(TypeVariable::new("a", Kind::Star))),
-                Predicate::is_in("Ord", Type::Variable(TypeVariable::new("b", Kind::Star))),
+                Predicate::new(
+                    "Ord".into(),
+                    Type::Variable(TypeVariable::new("a", Kind::Star)),
+                ),
+                Predicate::new(
+                    "Ord".into(),
+                    Type::Variable(TypeVariable::new("b", Kind::Star)),
+                ),
             ],
-            &Predicate::IsIn(
+            &Predicate::new(
                 "Ord".into(),
                 builtins::make_pair(
                     Type::Variable(TypeVariable::new("a", Kind::Star)),
@@ -159,30 +167,28 @@ impl TraitEnvironment {
 }
 
 impl TraitEnvironment {
-    fn by_super_class(&self, p: &Predicate) -> Vec<Predicate> {
-        let Predicate::IsIn(i, t) = p;
-
+    fn by_super_class(&self, predicate: &Predicate) -> Vec<Predicate> {
         let mut buf: Vec<Predicate> = self
-            .super_traits_of(i)
+            .super_traits_of(&predicate.id())
             .iter()
-            .flat_map(|i_| self.by_super_class(&Predicate::IsIn(i_.clone(), t.clone())))
+            .flat_map(|id| {
+                self.by_super_class(&Predicate::new(id.clone(), predicate.type_().clone()))
+            })
             .collect();
 
-        buf.push(p.clone());
+        buf.push(predicate.clone());
 
         buf
     }
 
-    fn by_instance(&self, p: &Predicate) -> Result<Vec<Predicate>> {
-        let Predicate::IsIn(i, _t) = p;
-
+    fn by_instance(&self, predicate: &Predicate) -> Result<Vec<Predicate>> {
         let mut buf = Vec::new();
 
-        for Qualified::Then(ps, h) in self.instances_of(i) {
-            let u = h.match_predicate(p)?;
+        for qualified in self.instances_of(&predicate.id()) {
+            let substitutions = qualified.consequence().match_predicate(predicate)?;
 
-            for p in ps {
-                buf.push(p.apply(&u));
+            for condition in qualified.conditions() {
+                buf.push(condition.apply(&substitutions));
             }
         }
 
@@ -343,12 +349,12 @@ impl TraitEnvironment {
         let mut is: Vec<Id> = vec![];
         let mut ts = vec![];
 
-        for Predicate::IsIn(i, t) in qs.iter() {
-            is.push(i.clone());
-            ts.push(t);
+        for p in qs.iter() {
+            is.push(p.id());
+            ts.push(p.type_().clone());
         }
 
-        if !ts.iter().all(|t| t == &&Type::Variable(v.clone())) {
+        if !ts.iter().all(|t| t == &Type::Variable(v.clone())) {
             return vec![];
         }
 
@@ -365,7 +371,7 @@ impl TraitEnvironment {
         for t_ in &self.defaults {
             if !is
                 .iter()
-                .map(|i| Predicate::IsIn(i.clone(), t_.clone()))
+                .map(|i| Predicate::new(i.clone(), t_.clone()))
                 .all(|q| self.entails(&[], &q))
             {
                 return vec![];

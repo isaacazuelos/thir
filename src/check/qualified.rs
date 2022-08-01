@@ -1,12 +1,28 @@
+use std::fmt;
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Qualified<T> {
-    // This is the `:=>` constructor in the paper.
-    //
-    // In the final assumptions produced, it's the trait constraints. The stuff
-    // in the `where` clauses for Rust.
-    Then(Vec<Predicate>, T),
+pub struct Qualified<T> {
+    conditions: Vec<Predicate>,
+    consequence: T,
+}
+
+impl<T> Qualified<T> {
+    pub fn new(conditions: Vec<Predicate>, consequence: T) -> Qualified<T> {
+        Qualified {
+            conditions,
+            consequence,
+        }
+    }
+
+    pub fn conditions(&self) -> &[Predicate] {
+        &self.conditions
+    }
+
+    pub fn consequence(&self) -> &T {
+        &self.consequence
+    }
 }
 
 impl Qualified<Type> {
@@ -28,25 +44,22 @@ impl Qualified<Type> {
             })
             .collect();
 
-        Scheme::ForAll(ks, self.apply(&s))
+        Scheme::new(ks, self.apply(&s))
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Qualified<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(")?;
+        f.debug_list().entries(self.conditions()).finish()?;
+        write!(f, " => ")?;
+        write!(f, "{} )", self.consequence())
     }
 }
 
 impl<T: Instantiate> Instantiate for Qualified<T> {
     fn inst(&self, ts: &[Type]) -> Qualified<T> {
-        let Qualified::Then(ps, t) = self;
-        Qualified::Then(ps.inst(ts), t.inst(ts))
-    }
-}
-
-impl<T: Clone> Qualified<T> {
-    pub fn then(pred: &[Predicate], t: T) -> Qualified<T> {
-        Qualified::Then(pred.into(), t)
-    }
-
-    pub fn consequence(&self) -> &T {
-        let Qualified::Then(_, q) = self;
-        q
+        Qualified::new(self.conditions.inst(ts), self.consequence.inst(ts))
     }
 }
 
@@ -55,12 +68,16 @@ where
     T: Types,
 {
     fn apply(&self, s: &[Substitution]) -> Self {
-        let Qualified::Then(ps, t) = self;
-        Qualified::Then(ps.apply(s), t.apply(s))
+        Qualified {
+            conditions: self.conditions.clone().apply(s),
+            consequence: self.consequence.apply(s),
+        }
     }
 
     fn type_variables(&self) -> Vec<TypeVariable> {
-        let Qualified::Then(ps, t) = self;
-        union(&ps.type_variables(), &t.type_variables())
+        union(
+            &self.conditions.type_variables(),
+            &self.consequence.type_variables(),
+        )
     }
 }
